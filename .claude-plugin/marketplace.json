@@ -1,0 +1,15 @@
+{
+  "name": "lizard-skills",
+  "owner": {
+    "name": "LizardLiang",
+    "url": "https://github.com/LizardLiang"
+  },
+  "plugins": [
+    {
+      "name": "tw-stock-etf-advisor",
+      "source": "./",
+      "description": "Taiwan ETF / stock research, buy-sell decisions, and personal holdings tracking (0050 / 0052 common holdings, live-quote entry/exit plans, trade ledger, sell-signal review).",
+      "version": "1.0.0"
+    }
+  ]
+}

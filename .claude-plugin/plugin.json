@@ -1,0 +1,24 @@
+{
+  "name": "tw-stock-etf-advisor",
+  "displayName": "Taiwan Stock & ETF Advisor",
+  "version": "1.0.0",
+  "description": "Taiwan ETF / stock research, buy-sell decisions, and personal holdings tracking. Finds common holdings between ETFs (e.g. 0050 / 0052), recommends what to buy and why with an entry/exit plan from a live quote, records the trades you make, and reviews your holdings to suggest what to sell. Always fetches live data via agent-browser; never guesses or derives prices.",
+  "author": {
+    "name": "LizardLiang",
+    "url": "https://github.com/LizardLiang"
+  },
+  "homepage": "https://github.com/LizardLiang/tw-stock-etf-advisor",
+  "repository": "https://github.com/LizardLiang/tw-stock-etf-advisor",
+  "license": "MIT",
+  "keywords": [
+    "taiwan-stock",
+    "etf",
+    "0050",
+    "0052",
+    "investing",
+    "holdings-tracker",
+    "stock-analysis",
+    "agent-browser",
+    "claude-skill"
+  ]
+}
