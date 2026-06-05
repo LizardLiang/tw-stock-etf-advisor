@@ -110,8 +110,29 @@ data, and produce a per-holding sell recommendation.
    - **Live quote** from Yahoo (price recipe in `references/data-sources.md`).
    - **Current ETF membership & weight**: re-fetch the relevant ETF holdings from the
      官網 and check whether the stock is still a constituent and at what weight.
+   - **Technical indicators** from Histock (recipe in `references/data-sources.md`):
+     MA5/10/20, K9, D9, RSI6, RSI12, MACD. These are daily-close values (T-1 during
+     market hours).
 
-3. **Evaluate all four sell signals per holding:**
+3. **Evaluate technical signals per holding** (supplement the fundamental sell signals):
+   | Signal | Condition | Interpretation |
+   |---|---|---|
+   | 均線空頭排列 | price < MA5 < MA10 | short-term downtrend, caution |
+   | 均線多頭排列 | price > MA5 > MA10 > MA20 | uptrend intact, support valid |
+   | KD 死亡交叉 | K < D and both declining | bearish momentum |
+   | KD 黃金交叉 | K > D and both rising | bullish momentum |
+   | KD 超買 | K9 > 80 | overbought — consider scaling out |
+   | KD 超賣 | K9 < 20 | oversold — possible bounce, but respect stops |
+   | RSI 偏弱 | RSI6 < 40 | selling pressure dominant |
+   | RSI 偏強 | RSI6 > 70 | buying pressure dominant |
+   | MACD 正轉負 | MACD crossing below 0 | medium-term trend weakening |
+
+   Technical signals alone are not sell triggers — they add context to the fundamental
+   sell signals below. E.g. "停損 approaching + KD death cross + RSI weak" strengthens
+   the case for exit, while "near 停損 but KD golden cross" suggests watching one more
+   session.
+
+4. **Evaluate all four fundamental sell signals per holding:**
    | Signal | Condition | Suggestion |
    |---|---|---|
    | 停損觸價 | live ≤ recorded 停損 | **停損出場** — discipline, exit |
@@ -120,14 +141,15 @@ data, and produce a per-holding sell recommendation.
    | 權重明顯下降 | ETF weight well below the level recorded at buy | **留意** — losing index conviction |
    | 報酬率檢視 | report unrealized P/L % from cost regardless | context for the above |
 
-4. **Present a holdings review table**: code · name · cost · live price · 報酬率% ·
-   每個訊號狀態 · 建議 (續抱 / 分批停利 / 停損出場 / 留意減碼). Lead with anything
-   actionable (停損/停利 hits) at the top.
+5. **Present a holdings review table**: code · name · cost · live price · 報酬率% ·
+   技術面摘要 · 每個訊號狀態 · 建議 (續抱 / 分批停利 / 停損出場 / 留意減碼). Lead with
+   anything actionable (停損/停利 hits) at the top. Include a per-holding technical
+   summary row (MA position, KD state, RSI level) so the user sees the full picture.
 
-5. **Offer to update the ledger via Eliot** if the user acts on a suggestion (record
+6. **Offer to update the ledger via Eliot** if the user acts on a suggestion (record
    the sell, update 持有中). Don't write unprompted.
 
-6. Close with the disclaimer line.
+7. Close with the disclaimer line.
 
 ---
 

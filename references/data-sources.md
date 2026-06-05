@@ -109,3 +109,51 @@ one shell invocation, then `close` at the end.
 That number is the last fund-valuation close and drifts intraday (we saw a 6% gap the
 same morning). Deriving is only acceptable as an explicitly-labeled rough fallback if
 the quote fetch fails.
+
+---
+
+## Technical indicators — Histock
+
+URL pattern: `https://histock.tw/stock/<CODE>` (e.g. `https://histock.tw/stock/3017`).
+
+Histock renders the chart as canvas, but the **indicator values appear as text** in
+`innerText` after the chart data block. Look for the `KD` anchor and slice from there:
+
+```
+agent-browser open "https://histock.tw/stock/3017"
+agent-browser wait 4000
+agent-browser eval --stdin <<'EVALEOF'
+(() => {
+  const t = document.body.innerText;
+  const kd = t.indexOf('KD');
+  if (kd === -1) return 'KD not found';
+  return t.slice(kd, kd + 400);
+})()
+EVALEOF
+```
+
+Output contains a block like:
+```
+日期  06/04
+開盤  2805
+最高  2820
+最低  2675
+收盤  2710
+量    4,446
+5MA   2,743.0
+10MA  2,684.0
+20MA  2,579.5
+K9    61.85
+D9    65.26
+RSI6  53.16
+RSI12 54.93
+MACD  62.77
+```
+
+These are **daily-close values** — during market hours they reflect the prior trading
+day (T-1), not intraday. Combine with Yahoo's live quote for the current session.
+
+**Why Histock over Yahoo for technicals:** Yahoo renders KD/RSI/MACD only as
+canvas/SVG chart visuals with no extractable text in the DOM. Histock exposes the
+actual numeric values in `innerText`, making them reliable for automated extraction.
+Goodinfo returns 404 for assessment pages from headless browsers.
