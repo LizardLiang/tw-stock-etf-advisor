@@ -9,7 +9,7 @@
       "name": "tw-stock-etf-advisor",
       "source": "./",
       "description": "Taiwan ETF / stock research, buy-sell decisions, and personal holdings tracking (0050 / 0052 common holdings, live-quote entry/exit plans, trade ledger, sell-signal review).",
-      "version": "1.1.0"
+      "version": "1.2.0"
     }
   ]
 }

@@ -157,3 +157,56 @@ day (T-1), not intraday. Combine with Yahoo's live quote for the current session
 canvas/SVG chart visuals with no extractable text in the DOM. Histock exposes the
 actual numeric values in `innerText`, making them reliable for automated extraction.
 Goodinfo returns 404 for assessment pages from headless browsers.
+
+The Histock block already gives the day's **量 (volume)**. For **Rule 6j volume
+confirmation** you also need the 5-day average volume — compute it from the recent
+daily volumes. Histock's individual-stock page also has a "技術分析/成交量" area, but
+the simplest reliable path is to read the last 5 sessions' 量 off the data table and
+average them, then compare the latest 量 against that average.
+
+---
+
+## Event data — earnings date, ex-dividend date (Rules 6h, 6i)
+
+The technical rules are blind to scheduled events; these two fetches close that gap.
+Both are public on Taiwan sources.
+
+### Next earnings / 法說會 date (Rule 6h)
+
+The official source is TWSE's 公開資訊觀測站 (MOPS) earnings-calendar
+(`mops.twse.com.tw`), but it is form-driven and awkward to scrape. The pragmatic path:
+
+- **Yahoo 個股「基本」頁** often lists 財報/法說 events:
+  `https://tw.stock.yahoo.com/quote/<CODE>.TW/profile` — read `innerText` and search
+  for 「財報」「法說」「電話會議」 with a date.
+- **Fallback — WebSearch** (not browser, to avoid Google CAPTCHA): query
+  "<code> <name> 法說會 OR 財報 公布日期 2026Q<n>" and read the date from the result.
+- Taiwan companies report quarterly; Q1 ≈ mid-May, Q2 ≈ mid-Aug, Q3 ≈ mid-Nov,
+  Q4/annual ≈ end-Mar. Monthly 營收 is published by the 10th of each month — a
+  營收 release is a smaller event but can still move the stock.
+
+Convert the found date to "X trading days away" and apply the ≤ 5-day blackout.
+
+### Ex-dividend / 除權息 date (Rule 6i)
+
+- **Histock 除權息頁**: `https://histock.tw/stock/<CODE>/除權除息` (or the 股利政策
+  tab on the main `histock.tw/stock/<CODE>` page) lists 除權息交易日 and the
+  現金股利/股票股利 amounts. Read `innerText` and search for 「除息交易日」「除權交易日」
+  「現金股利」.
+- **Fallback — WebSearch**: "<code> <name> 除權息 交易日 2026".
+- Taiwan ex-dividend season clusters in **June–August**. When the ex-div date is
+  near or just passed, a price drop ≈ the dividend amount is mechanical, NOT a
+  breakdown — restore the dividend before judging support, and lower the recorded
+  停損 by the dividend amount.
+
+---
+
+## Institutional flows — 三大法人買賣超 (Rule 6k, optional / Tier 2)
+
+Not yet a mandatory gate, but high-signal for Taiwan. 外資/投信/自營 net buy/sell:
+
+- **Histock 法人頁**: `https://histock.tw/stock/<CODE>/三大法人` — recent days of
+  外資/投信/自營 買賣超 (張). Read `innerText`.
+- A stock you want to buy while **外資 connectively 賣超** is a red flag; **投信 連買**
+  (fund window-dressing, esp. quarter-end) is a tailwind. Use as context, not a
+  hard gate, until promoted to a numbered rule.
