@@ -1,8 +1,8 @@
 {
   "name": "tw-stock-etf-advisor",
   "displayName": "Taiwan Stock & ETF Advisor",
-  "version": "1.2.0",
-  "description": "Taiwan ETF / stock research, buy-sell decisions, and personal holdings tracking. Finds common holdings between ETFs (e.g. 0050 / 0052), recommends what to buy and why with an entry/exit plan from a live quote, records the trades you make, and reviews your holdings to suggest what to sell. Always fetches live data via agent-browser; never guesses or derives prices.",
+  "version": "1.4.0",
+  "description": "Taiwan ETF / stock research, buy-sell decisions, personal holdings tracking, and K-line charting. Finds common holdings between ETFs (e.g. 0050 / 0052), recommends what to buy and why with an entry/exit plan from a live quote, records the trades you make, reviews your holdings to suggest what to sell, and draws a standalone Tokyo-Night candlestick chart that marks why each buy/sell/hold happened — with forward ⚑ signal lines for watchlist triggers and a post-mortem review panel logging every decision (status, condition, outcome). Persists price history + decision markers in a local SQLite DB. Always fetches live data via agent-browser; never guesses or derives prices.",
   "author": {
     "name": "LizardLiang",
     "url": "https://github.com/LizardLiang"
@@ -19,6 +19,11 @@
     "holdings-tracker",
     "stock-analysis",
     "agent-browser",
-    "claude-skill"
+    "claude-skill",
+    "kline",
+    "candlestick-chart",
+    "sqlite",
+    "tokyo-night",
+    "data-visualization"
   ]
 }

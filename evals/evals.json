@@ -1,0 +1,30 @@
+{
+  "skill_name": "tw-stock-etf-advisor",
+  "note": "Action D (K-line charting) evals. Baseline = no skill. The user already has a seeded SQLite DB at C:/Users/lizard_liang/personal/stocks/stocks.db (8 stocks, markers from their Obsidian ledger).",
+  "evals": [
+    {
+      "id": 0,
+      "name": "chart-held-stock-with-markers",
+      "prompt": "幫我畫 3017 奇鋐的 K 線圖，把我的買進、停損、停利都標在圖上，我想看看現在跌到哪了。",
+      "expected_output": "A standalone Tokyo Night candlestick HTML at charts/3017-*.html showing ~60 sessions of real OHLC (incl. 2026-06-29), with buy@2820 / stop@2550 / target markers drawn and their reasons on hover. No external libraries.",
+      "files": [],
+      "assertions": []
+    },
+    {
+      "id": 1,
+      "name": "chart-english-watchlist",
+      "prompt": "show me a candlestick chart for 聯發科 (2454) over the last ~3 months, and mark on it the reason it's on my watchlist",
+      "expected_output": "Standalone candlestick HTML for 2454 with real OHLC and a watch marker carrying the watchlist trigger reason. Tokyo Night theme, vanilla JS only.",
+      "files": [],
+      "assertions": []
+    },
+    {
+      "id": 2,
+      "name": "chart-my-holdings",
+      "prompt": "把我目前持股的走勢圖畫出來，每個進出場的原因都標上去",
+      "expected_output": "Reads the 持有中 ledger (3017 奇鋐), renders its candlestick chart with buy/stop/target markers and reasons. Standalone HTML, Tokyo Night.",
+      "files": [],
+      "assertions": []
+    }
+  ]
+}

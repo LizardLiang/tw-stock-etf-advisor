@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<!--
+  Standalone K-line (candlestick) chart — Tokyo Night theme.
+  Zero dependencies: pure HTML + CSS + vanilla JS on a <canvas>. No libraries, no CDN, no build.
+  render-chart.mjs replaces the __CHART_DATA__ token below with a JSON literal and writes the file.
+  Open it in any browser; everything (data + engine) is inline.
+
+  Taiwan convention: 紅漲綠跌 — red candle = up (close ≥ open), green = down. (Inverted vs Western.)
+-->
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>K 線圖</title>
+<style>
+  :root{
+    --bg:#1a1b26; --panel:#16161e; --fg:#a9b1d6; --muted:#51597d; --grid:#23243044;
+    --blue:#7aa2f7; --purple:#bb9af7; --green:#9ece6a; --red:#f7768e;
+    --orange:#e0af68; --cyan:#7dcfff; --border:#2a2b3d;
+    --up:#f7768e;   /* 紅漲 */  --down:#9ece6a; /* 綠跌 */
+    --ma5:#e0af68; --ma10:#7dcfff; --ma20:#bb9af7;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);
+    font-family:"Segoe UI","Microsoft JhengHei",system-ui,sans-serif}
+  #app{display:flex;flex-direction:column;height:100vh;padding:14px 16px;gap:10px}
+  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  header h1 .code{color:var(--blue)}
+  header .sub{color:var(--muted);font-size:12px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--fg);margin-left:auto}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .swatch{width:11px;height:11px;border-radius:2px;display:inline-block}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;font-size:11px}
+  .chip{padding:2px 8px;border:1px solid var(--border);border-radius:999px;color:var(--muted)}
+  #wrap{position:relative;flex:1;min-height:0;border:1px solid var(--border);border-radius:8px;
+    background:var(--panel);overflow:hidden}
+  canvas{display:block;width:100%;height:100%}
+  #tip{position:absolute;pointer-events:none;display:none;z-index:5;background:#1f2030f2;
+    border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;
+    color:var(--fg);box-shadow:0 6px 20px #0008;max-width:300px;line-height:1.5}
+  #tip b{color:var(--blue)}
+  #tip .r{color:var(--orange)}
+  footer{color:var(--muted);font-size:11px;text-align:right}
+  .mk{font-weight:700}
+  /* ---- review / post-mortem panel ---- */
+  #review{flex:0 0 auto;max-height:30vh;overflow:auto;border:1px solid var(--border);
+    border-radius:8px;background:var(--panel)}
+  #review h2{margin:0;padding:8px 12px;font-size:13px;color:var(--fg);position:sticky;top:0;
+    background:var(--panel);border-bottom:1px solid var(--border);z-index:1}
+  #review h2 small{color:var(--muted);font-weight:400;margin-left:8px}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #20212e;vertical-align:top}
+  th{color:var(--muted);font-weight:600;position:sticky;top:33px;background:var(--panel)}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600}
+  .act{font-weight:700;white-space:nowrap}
+  td .cond{color:var(--cyan)} td .out{color:var(--orange)} td .why{color:var(--fg)}
+  tr:hover{background:#1e1f2e}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1><span class="code" id="t-code"></span> <span id="t-name"></span></h1>
+    <span class="sub" id="t-range"></span>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--up)"></i>漲</span>
+      <span><i class="swatch" style="background:var(--down)"></i>跌</span>
+      <span><i class="swatch" style="background:var(--ma5)"></i>MA5</span>
+      <span><i class="swatch" style="background:var(--ma10)"></i>MA10</span>
+      <span><i class="swatch" style="background:var(--ma20)"></i>MA20</span>
+    </div>
+  </header>
+  <div class="chips" id="t-chips"></div>
+  <div id="wrap">
+    <canvas id="cv"></canvas>
+    <div id="tip"></div>
+  </div>
+  <div id="review">
+    <h2>決策與訊號紀錄 <small>buy / sell / hold 與待檢查訊號 — 供事後覆盤</small></h2>
+    <table id="review-tbl">
+      <thead><tr>
+        <th>日期</th><th>動作</th><th>狀態</th><th class="num">價位/觸發</th>
+        <th class="num">距現價</th><th>條件 / 理由</th><th>結果</th><th>來源</th>
+      </tr></thead>
+      <tbody id="review-body"></tbody>
+    </table>
+  </div>
+  <footer id="t-foot"></footer>
+</div>
+
+<script>
+const DATA = __CHART_DATA__;
+
+// ---- helpers ---------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const fmt = (n, d=2) => (n==null || isNaN(n)) ? '–' : Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+const fmtVol = (v) => v==null ? '–' : (v>=1e8 ? (v/1e8).toFixed(1)+'億股' : Math.round(v/1000).toLocaleString()+'張');
+
+function sma(vals, n){
+  const out = Array(vals.length).fill(null);
+  let sum = 0;
+  for (let i=0;i<vals.length;i++){
+    sum += vals[i];
+    if (i>=n) sum -= vals[i-n];
+    if (i>=n-1) out[i] = sum/n;
+  }
+  return out;
+}
+
+// ---- marker styling --------------------------------------------------------------------
+// Distinct glyphs/colors so markers never read as candle colors. stop/target are price lines.
+const MK = {
+  buy:    {glyph:'▲', color:'#7aa2f7', label:'買進', line:false, place:'below'},
+  sell:   {glyph:'▼', color:'#bb9af7', label:'賣出', line:false, place:'above'},
+  hold:   {glyph:'◆', color:'#e0af68', label:'續抱', line:false, place:'below'},
+  watch:  {glyph:'○', color:'#7dcfff', label:'觀察', line:false, place:'below'},
+  stop:   {glyph:'',  color:'#f7768e', label:'停損', line:true},
+  target: {glyph:'',  color:'#9ece6a', label:'停利', line:true},
+  // forward signal — a condition to check; drawn as a dashed threshold line + ⚑ flag.
+  signal: {glyph:'⚑', color:'#e0af68', label:'訊號', line:true, flag:true},
+};
+// status → colour (overrides MK.color where a status is recorded). The lifecycle a post-mortem cares about.
+const STATUS = {
+  pending:    {color:'#e0af68', label:'待觸發'},
+  met:        {color:'#9ece6a', label:'已成立'},
+  open:       {color:'#7aa2f7', label:'持有中'},
+  closed:     {color:'#787c99', label:'已平倉'},
+  stopped:    {color:'#f7768e', label:'已停損'},
+  invalidated:{color:'#f7768e', label:'已失效'},
+};
+const mkColor = (m) => (m.status && STATUS[m.status]) ? STATUS[m.status].color : (MK[m.action]?.color || '#a9b1d6');
+
+// ---- state -----------------------------------------------------------------------------
+const cv = $('cv'), ctx = cv.getContext('2d'), tip = $('tip');
+const rows = DATA.ohlc.slice();           // {date,open,high,low,close,volume}
+const closes = rows.map(r=>r.close);
+const ma = { 5:sma(closes,5), 10:sma(closes,10), 20:sma(closes,20) };
+let geom = null;                          // computed in draw(); used by hover hit-testing
+
+// header
+$('t-code').textContent = DATA.code;
+$('t-name').textContent = DATA.name || '';
+$('t-range').textContent = rows.length ? `${rows[0].date} → ${rows[rows.length-1].date}　(${rows.length} 交易日)` : '無資料';
+$('t-foot').textContent = `資料來源 TWSE/TPEx · DB 持久化 · 產生於 ${DATA.generated} · 紅漲綠跌(台股慣例)`;
+// chips = the forward-looking things to CHECK (pending signals / open-position stops & targets)
+const pending = DATA.markers.filter(m => m.status === 'pending' || m.action === 'signal');
+$('t-chips').innerHTML = (pending.length
+  ? pending.map(m => { const s = MK[m.action] || {}; const c = mkColor(m);
+      return `<span class="chip"><b style="color:${c}">${s.glyph||''}${s.label||m.action}</b> ${m.price?('@'+fmt(m.price)):''} ${m.condition?escapeHtml(m.condition.slice(0,26)):''}</span>`; }).join('')
+  : '<span class="chip">無待檢查訊號</span>');
+
+// ---- drawing ---------------------------------------------------------------------------
+function draw(){
+  const wrap = cv.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  cv.width = W*dpr; cv.height = H*dpr; ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  if (!rows.length) return;
+
+  const padL=14, padR=64, padT=14, padB=26;
+  const volH = Math.max(48, H*0.18);
+  const priceTop = padT, priceBot = H - padB - volH - 8;
+  const volTop = priceBot + 8, volBot = H - padB;
+
+  // price range — include MA + stop/target levels so nothing clips off-screen
+  let lo=Infinity, hi=-Infinity;
+  for (const r of rows){ lo=Math.min(lo,r.low); hi=Math.max(hi,r.high); }
+  for (const m of DATA.markers) if (m.price){ lo=Math.min(lo,m.price); hi=Math.max(hi,m.price); }
+  const pad=(hi-lo)*0.06||1; lo-=pad; hi+=pad;
+  const maxVol = Math.max(...rows.map(r=>r.volume||0),1);
+
+  const n = rows.length;
+  const plotW = W - padL - padR;
+  const step = plotW / n;
+  const cw = Math.max(1, Math.min(14, step*0.62));
+  const xAt = (i)=> padL + step*(i+0.5);
+  const yAt = (p)=> priceTop + (hi-p)/(hi-lo)*(priceBot-priceTop);
+  const yVol = (v)=> volBot - (v/maxVol)*(volBot-volTop);
+
+  // grid + price axis (right)
+  ctx.strokeStyle='#23243066'; ctx.fillStyle='#51597d'; ctx.lineWidth=1;
+  ctx.font='11px Segoe UI'; ctx.textBaseline='middle';
+  const ticks=5;
+  for (let i=0;i<=ticks;i++){
+    const p = lo + (hi-lo)*i/ticks, y = yAt(p);
+    ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke();
+    ctx.textAlign='left'; ctx.fillText(fmt(p), W-padR+6, y);
+  }
+
+  // date axis (sparse)
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  const labelEvery = Math.ceil(n/8);
+  for (let i=0;i<n;i+=labelEvery){
+    ctx.fillStyle='#51597d';
+    ctx.fillText(rows[i].date.slice(5), xAt(i), volBot+6);
+  }
+
+  // volume bars
+  for (let i=0;i<n;i++){
+    const r=rows[i], up=r.close>=r.open;
+    ctx.fillStyle = (up?'#f7768e':'#9ece6a')+'66';
+    const x=xAt(i)-cw/2, y=yVol(r.volume||0);
+    ctx.fillRect(x,y,cw,volBot-y);
+  }
+
+  // candles
+  for (let i=0;i<n;i++){
+    const r=rows[i], up=r.close>=r.open;
+    const col = up?'#f7768e':'#9ece6a';
+    const x=xAt(i);
+    ctx.strokeStyle=col; ctx.fillStyle=col; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.moveTo(x,yAt(r.high)); ctx.lineTo(x,yAt(r.low)); ctx.stroke();
+    const yO=yAt(r.open), yC=yAt(r.close);
+    const top=Math.min(yO,yC), h=Math.max(1,Math.abs(yO-yC));
+    ctx.fillRect(x-cw/2, top, cw, h);
+  }
+
+  // MA lines
+  const drawMA=(arr,color)=>{
+    ctx.strokeStyle=color; ctx.lineWidth=1.4; ctx.beginPath(); let started=false;
+    for (let i=0;i<n;i++){ if(arr[i]==null)continue; const x=xAt(i),y=yAt(arr[i]);
+      if(!started){ctx.moveTo(x,y);started=true;}else ctx.lineTo(x,y);} ctx.stroke();
+  };
+  drawMA(ma[5],'#e0af68'); drawMA(ma[10],'#7dcfff'); drawMA(ma[20],'#bb9af7');
+
+  // horizontal lines: 停損 / 停利 / forward signals. Colour follows status (amber=待觸發, etc).
+  // Signals get a ⚑ flag at the right edge so "what to check next" is unmissable.
+  ctx.textBaseline='middle'; ctx.textAlign='left';
+  for (const m of DATA.markers){
+    const s=MK[m.action]; if(!s||!s.line||!m.price) continue;
+    const y=yAt(m.price), col=mkColor(m);
+    ctx.setLineDash(s.flag?[2,3]:[5,4]);
+    ctx.strokeStyle=col; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle=col; ctx.font='11px Segoe UI';
+    ctx.fillText(`${s.flag?'⚑ ':''}${s.label} ${fmt(m.price)}`, padL+4, y-8);
+    if(s.flag){ ctx.font='bold 14px Segoe UI'; ctx.fillText('⚑', W-padR+3, y); ctx.font='11px Segoe UI'; }
+  }
+
+  // pin markers (buy/sell/hold/watch). Drawn as a coloured badge OFFSET from the candle (so it
+  // never hides price action), with a dotted connector down/up to the exact price dot. This keeps
+  // the "why we acted" obvious at a glance — the whole point of the chart.
+  const dateIdx = {}; rows.forEach((r,i)=>dateIdx[r.date]=i);
+  const pins=[];
+  for (const m of DATA.markers){
+    const s=MK[m.action]; if(!s||s.line) continue;
+    let i=dateIdx[m.date]; if(i==null){ // nearest prior session if exact date missing
+      for(let k=0;k<n;k++){ if(rows[k].date<=m.date) i=k; else break; } }
+    if(i==null) continue;
+    const x=xAt(i);
+    const above = s.place==='above';
+    const badgeY = above ? yAt(rows[i].high)-17 : yAt(rows[i].low)+17;
+    if(m.price){
+      const py=yAt(m.price);
+      ctx.strokeStyle=s.color+'99'; ctx.lineWidth=1; ctx.setLineDash([2,2]);
+      ctx.beginPath(); ctx.moveTo(x,py); ctx.lineTo(x,badgeY); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle=s.color; ctx.beginPath(); ctx.arc(x,py,2.6,0,7); ctx.fill();
+    }
+    const rB=9;
+    ctx.fillStyle=s.color; ctx.beginPath(); ctx.arc(x,badgeY,rB,0,7); ctx.fill();
+    ctx.fillStyle='#16161e'; ctx.font='bold 12px Segoe UI'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(s.glyph, x, badgeY+0.5);
+    pins.push({x,y:badgeY,r:rB,m,s});
+  }
+
+  geom={padL,padR,priceTop,priceBot,volBot,step,xAt,yAt,n,pins};
+}
+
+// ---- hover: crosshair + OHLC tooltip + marker reasons ----------------------------------
+function onMove(ev){
+  if(!geom) return;
+  const rect=cv.getBoundingClientRect();
+  const mx=ev.clientX-rect.left, my=ev.clientY-rect.top;
+
+  // marker hit-test first (small radius)
+  for(const p of geom.pins){
+    if(Math.hypot(mx-p.x,my-p.y)<10){
+      const m=p.m, col=mkColor(m), st=STATUS[m.status];
+      showTip(ev, `<b style="color:${col}">${p.s.label}</b> ${m.date}${m.price?(' @'+fmt(m.price)):''}`
+        + (st?` · <span style="color:${st.color}">${st.label}</span>`:'')
+        + (m.condition?`<br>條件：${escapeHtml(m.condition)}`:'')
+        + (m.reason?`<br><span class="r">${escapeHtml(m.reason)}</span>`:'')
+        + (m.outcome?`<br>結果：${escapeHtml(m.outcome)}`:'')
+        + (m.note_link?`<br><span style="color:#51597d">${escapeHtml(m.note_link)}</span>`:''));
+      return;
+    }
+  }
+  // else nearest session
+  const i=Math.round((mx-geom.padL)/geom.step-0.5);
+  if(i<0||i>=geom.n){ tip.style.display='none'; draw(); return; }
+  draw();
+  const x=geom.xAt(i);
+  ctx.strokeStyle='#7aa2f733'; ctx.setLineDash([3,3]); ctx.beginPath();
+  ctx.moveTo(x,geom.priceTop); ctx.lineTo(x,geom.volBot); ctx.stroke(); ctx.setLineDash([]);
+  const r=rows[i], up=r.close>=r.open, col=up?'#f7768e':'#9ece6a';
+  const chg=i>0?((r.close-rows[i-1].close)/rows[i-1].close*100):0;
+  showTip(ev, `<b>${r.date}</b><br>`
+    +`開 ${fmt(r.open)}　高 ${fmt(r.high)}<br>低 ${fmt(r.low)}　收 <span style="color:${col}">${fmt(r.close)}</span><br>`
+    +`漲跌 <span style="color:${col}">${chg>=0?'+':''}${chg.toFixed(2)}%</span>　量 ${fmtVol(r.volume)}`
+    +`<br>MA5 ${fmt(ma[5][i])}　MA10 ${fmt(ma[10][i])}　MA20 ${fmt(ma[20][i])}`);
+}
+function showTip(ev,html){
+  const rect=cv.parentElement.getBoundingClientRect();
+  tip.innerHTML=html; tip.style.display='block';
+  let x=ev.clientX-rect.left+14, y=ev.clientY-rect.top+14;
+  if(x+tip.offsetWidth>rect.width) x=ev.clientX-rect.left-tip.offsetWidth-14;
+  if(y+tip.offsetHeight>rect.height) y=rect.height-tip.offsetHeight-6;
+  tip.style.left=x+'px'; tip.style.top=y+'px';
+}
+function escapeHtml(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+// ---- review / post-mortem table --------------------------------------------------------
+// Every decision and signal as a row, with enough context to reconstruct the thesis later:
+// what was done, its status, the level, how far price is from it now, the condition/why, the
+// outcome, and a link back to the full Obsidian note.
+function populateReview(){
+  const lastC = rows.length ? rows[rows.length-1].close : null;
+  const ms = [...DATA.markers].sort((a,b)=>
+    (a.status==='pending'?-1:0)-(b.status==='pending'?-1:0) || b.date.localeCompare(a.date));
+  $('review-body').innerHTML = ms.map(m=>{
+    const s=MK[m.action]||{}, col=mkColor(m), st=STATUS[m.status];
+    const dist = (m.price&&lastC)? (lastC-m.price)/m.price*100 : null;
+    const distCol = dist==null?'var(--muted)':(dist>=0?'var(--up)':'var(--down)');
+    return `<tr>
+      <td>${m.date}</td>
+      <td class="act" style="color:${col}">${s.glyph||''} ${s.label||m.action}</td>
+      <td>${st?`<span class="pill" style="color:${st.color};border:1px solid ${st.color}55">${st.label}</span>`:'–'}</td>
+      <td class="num">${m.price?fmt(m.price):'–'}</td>
+      <td class="num" style="color:${distCol}">${dist==null?'–':(dist>=0?'+':'')+dist.toFixed(1)+'%'}</td>
+      <td>${m.condition?`<div class="cond">${escapeHtml(m.condition)}</div>`:''}${m.reason?`<div class="why">${escapeHtml(m.reason)}</div>`:''}</td>
+      <td class="out">${m.outcome?escapeHtml(m.outcome):''}</td>
+      <td style="color:var(--muted)">${m.note_link?escapeHtml(m.note_link):''}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="8" style="color:var(--muted);padding:14px">尚無紀錄</td></tr>';
+  $('review').querySelector('h2 small').textContent =
+    `buy / sell / hold 與待檢查訊號 — 供事後覆盤 · 共 ${ms.length} 筆`;
+}
+populateReview();
+
+cv.addEventListener('mousemove',onMove);
+cv.addEventListener('mouseleave',()=>{tip.style.display='none';draw();});
+window.addEventListener('resize',draw);
+draw();
+</script>
+</body>
+</html>

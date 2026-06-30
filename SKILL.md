@@ -10,14 +10,23 @@ description: >-
   when the user only says things like "幫我看 0050 跟 0052 共同持股", "推薦我買哪一檔",
   "我買了 <股票> <股數> @<價>", "檢查我的持股", or "我現在該賣什麼" — they need this
   skill's exact data-sourcing and tracking workflow, not ad-hoc browsing. Always
-  fetch live data with agent-browser; never guess or derive prices.
+  fetch live data with agent-browser; never guess or derive prices. ALSO use this
+  skill whenever the user wants to SEE or VISUALIZE a Taiwan stock — "畫 K 線",
+  "畫個 K 線圖", "把買賣點/進出場標在圖上", "show me the chart for 2330", "candlestick
+  chart", "K-line", "視覺化我的持股", "畫出奇鋐的走勢" — it generates a standalone
+  Tokyo-Night candlestick chart (Action D) that marks WHY each buy/sell/hold happened.
 ---
 
 # Taiwan Stock & ETF Advisor
 
 This skill reproduces a research-to-tracking workflow for Taiwan equities. It has
-three actions. Figure out which one the user wants from their phrasing, then follow
-that section. The non-negotiable rules below apply to all three.
+**four** actions. Figure out which one the user wants from their phrasing, then follow
+that section. The non-negotiable rules below apply to all of them.
+
+- **Action A** — ETF common-holdings analysis & stock recommendation
+- **Action B** — record a trade to the holdings ledger
+- **Action C** — review current holdings & suggest selling
+- **Action D** — draw a K-line (candlestick) chart marking buy/sell/hold reasons
 
 ## Core rules (why they matter)
 
@@ -40,10 +49,17 @@ that section. The non-negotiable rules below apply to all three.
    short risk/disclaimer line. Taiwan AI-theme stocks are volatile with deep
    pullbacks — remind the user to verify the latest price/financials and honor stops.
 
-5. **Persist to Obsidian by delegating to Eliot.** This skill does the analysis and
-   data fetching; the vault writes (analysis note, `[[stock]]` project log, holdings
-   ledger) go through the **Eliot** skill so they follow the user's templates and
-   approval flow. See `references/obsidian-tracking.md`.
+5. **Persist to Obsidian by delegating to Eliot — and mirror the structured bits to
+   SQLite.** This skill does the analysis and data fetching; the *narrative* vault writes
+   (analysis note, `[[stock]]` project log, holdings ledger) go through the **Eliot** skill
+   so they follow the user's templates and approval flow (`references/obsidian-tracking.md`).
+   **Obsidian stays the source of truth for the "why".** Separately, the *structured* data —
+   daily OHLC price history and decision **markers** (buy/sell/hold/watch/stop/target with a
+   one-line reason) — is mirrored into a local **SQLite** DB so it can be charted and queried
+   (Action D). The marker's reason is a short echo of the note, never a competing master copy;
+   the two must not diverge in intent. SQLite mechanics are in `references/charting.md`. The DB
+   path resolves env `TW_STOCK_DB` → `Eliot/Profile.md` `stock_db_path:` →
+   default `C:\Users\lizard_liang\personal\stocks\stocks.db` (point the override at OneDrive to sync).
 
 6. **Risk management — learned from 2026-06 post-mortem.** The following rules exist
    because a prior analysis cycle produced structurally flawed recommendations that
@@ -330,6 +346,18 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
    as: `- <code> <name>：<trigger condition>` (e.g.
    `- 3037 欣興：等 KD 黃金交叉 + 站回 20MA(948)`).
 
+10. **Mirror to SQLite (structured layer, after the Eliot write).** Once the user approves
+    the persist, also record the structured side so charts stay current (Rule 5; mechanics in
+    `references/charting.md`). For each recommended pick and each watchlist entry, add a marker:
+    - each watchlist entry → a forward **signal** so its trigger shows on the chart as a flagged
+      threshold line: `add-marker.mjs <code> <date> signal <trigger-level> "進場觀察：<name>" "[[<note-slug>]]" --status pending --condition "<the exact trigger, e.g. 站回 20MA(4329) 連 2 日 + KD 金叉>"`.
+      When a trigger fires, re-assert with `--status met`. A recommended position adds `buy`
+      (`--status open`) plus `stop`/`target` markers at the planned levels with their `--condition`.
+    - top up price history for every stock you charted/analyzed:
+      `fetch-history.mjs <code> --months 1` (cheap — only the current month re-fetches).
+    This is best-effort and silent; never block the analysis on it. If Node/DB is unavailable,
+    skip and mention it.
+
 ---
 
 ## Action B — Record a trade to the holdings ledger
@@ -353,6 +381,10 @@ reporting an actual transaction.
 4. **Delegate the write to Eliot**: append one transaction row and update the
    `## 持有中` position summary (cost average, total cost). Log a one-liner to
    `[[stock]]`. The exact ledger format is in `references/obsidian-tracking.md`.
+5. **Mirror the trade to SQLite** so the chart shows the real fill (Rule 5):
+   `add-marker.mjs <code> <date> <買=buy|賣=sell> <fill> "<備註>"`. On a buy, also assert the
+   `stop`/`target` markers at the recorded levels. Then `fetch-history.mjs <code> --months 1`
+   to top up price history. Best-effort; don't block on it.
 
 ---
 
@@ -414,6 +446,52 @@ data, and produce a per-holding sell recommendation.
 
 ---
 
+## Action D — Draw a K-line chart marking buy/sell/hold reasons
+
+Triggered by: "畫 K 線", "畫個 K 線圖", "把買賣點/進出場標在圖上", "show me the chart for
+2330", "candlestick", "K-line", "視覺化我的持股", "畫出奇鋐走勢". The user wants to *see* a
+stock's price action with the decisions (and their reasons) marked on it.
+
+This action is **code-driven, not browser-driven**: it renders a self-contained Tokyo-Night
+candlestick HTML file from a local SQLite DB (OHLC history + decision markers). All scripts are
+zero-dependency Node — run each with `node --experimental-sqlite <skill>/scripts/<name>.mjs …`.
+Read `references/charting.md` once at the start of this action — it has the DB schema, the
+TWSE 民國-date gotcha, and the exact CLI for every step.
+
+1. **Resolve the target stock(s).** A code/name from the prompt, or "my holdings" → read the
+   `## 持有中` ledger (Action C step 1) and chart each. Default lookback 60 trading days (`--days`).
+
+2. **Ensure the DB exists and history is fresh.**
+   - `scripts/db.mjs --init` is implicit (every script auto-creates the schema).
+   - `scripts/fetch-history.mjs <code> --months 4` (TWSE 上市; add `--market tpex` for 上櫃).
+     Only missing months are fetched, and the current month always tops up — cheap to re-run.
+
+3. **Make sure the buy/sell/hold "why" markers exist.** The chart is only as good as its markers.
+   - **First time / sparse DB**: run `scripts/seed-from-obsidian.mjs` once to import the holdings
+     ledger (買/賣 + 停損/停利) and the latest analysis note's `### 觀察名單` into markers.
+   - **Otherwise**: markers accrue automatically from Action A step 10 and Action B step 5. Add
+     ad-hoc ones with `scripts/add-marker.mjs <code> <date> <action> [price] [reason] [note_link]`
+     (action ∈ buy|sell|hold|watch|stop|target). Keep the reason short — it is the chart tooltip;
+     the full rationale lives in the Obsidian note (pass its `[[slug]]` as note_link).
+
+4. **Render and open.** `scripts/render-chart.mjs <code> --days 60` writes
+   `…\personal\stocks\charts\<code>-<YYYYMMDD>.html`. Open it for the user (`start <path>`), or
+   `agent-browser open file:///<path>` + `screenshot` if you want to verify it headless. **If the
+   user reports the file looks blank**, open it **headed** (`agent-browser open --headed file:///<path>`)
+   so it renders in a visible window. The chart shows 紅漲綠跌 candles, MA5/10/20, volume, dashed
+   停損/停利 lines, ⚑ **signal** threshold lines (amber=待觸發, green=已成立) for forward triggers,
+   and pin markers (▲買 ▼賣 ◆續抱) whose hover tooltip shows reason + status + outcome + note link.
+   Below the chart is the **決策與訊號紀錄** review panel — every decision/signal with its level,
+   distance-to-current-price, condition, and outcome — so the chart doubles as a post-mortem reference.
+
+5. **Summarize what the chart shows** in chat (don't just hand over a file): the trend, where the
+   marked decisions sit relative to the moving averages, **which forward signals are closest to
+   firing** (smallest 距現價 in the review panel), and whether any 停損/停利 line is close to the
+   latest close. Charts are per-stock; for "my holdings" render one per held position. Close with
+   the disclaimer line (Rule 4).
+
+---
+
 ## Mechanics & gotchas
 
 - `agent-browser`: `open` → `wait 3500` (a fixed wait — Yahoo's `--load networkidle`
@@ -424,3 +502,7 @@ data, and produce a per-holding sell recommendation.
   extraction code that is easy to get wrong (div-based tables, stale-data traps).
 - Read `references/obsidian-tracking.md` before any persist step so the note and
   ledger formats match the user's existing vault conventions.
+- Read `references/charting.md` before Action D (or the SQLite mirror steps in A/B) — it
+  has the DB path resolution, the TWSE 民國-date (+1911) gotcha, the marker glyph/colour map,
+  and every script's exact CLI. The charting scripts are zero-dependency Node (built-in
+  `node:sqlite` + global `fetch`); always invoke with `node --experimental-sqlite`.

@@ -68,6 +68,88 @@ agent-browser eval --stdin <<'EVALEOF'
 EVALEOF
 ```
 
+### 00892 富邦台灣半導體 — 富邦投信 ETF 投資網
+
+Same system as 0052 — just change `stkId`. Full holdings in `innerText` as a clean
+tab-separated table `<code>\t<name>\t<shares>\t<value>\t<weight%>`. Note the table
+leads with a small 期貨 (futures) block before the 股票 block; slice around 台積電 to
+land in the stock rows.
+
+```
+agent-browser open "https://websys.fsit.com.tw/FubonETF/Fund/Assets.aspx?stkId=00892"
+agent-browser wait 4000
+agent-browser eval --stdin <<'EVALEOF'
+(() => {
+  const t = document.body.innerText;
+  const i = t.indexOf('台積電');
+  return t.slice(Math.max(0, i - 200), i + 3000);
+})()
+EVALEOF
+```
+
+This is the **preferred** source for 00892 (official, full list). 富邦半導體 is a
+~30-stock concentrated ETF — 台積電 ~23%, 聯發科 ~10%, plus 瑞昱/鴻勁/日月光/信驊/
+聯詠/旺矽/穎崴/力旺 etc., almost all of which are 0050/0052 共同成分.
+
+### 00891 中信關鍵半導體 — use MoneyDJ (official site is bot-blocked)
+
+The official 中國信託投信 page (`ctbcinvestments.com/Etf/88182265`) returns a
+**"Web Page Blocked / Attack ID"** firewall page to headless browsers — do NOT use it.
+玩股網/口袋證券/FindBillion are SPAs (holdings lazy-loaded, not in initial `innerText`)
+or have bot-protection. The reliable headless source is **MoneyDJ**, which is
+server-rendered:
+
+URL: `https://www.moneydj.com/etf/x/basic/basic0007.xdjhtm?etfid=00891.tw`
+
+```
+agent-browser open "https://www.moneydj.com/etf/x/basic/basic0007.xdjhtm?etfid=00891.tw"
+agent-browser wait 4500
+agent-browser eval --stdin <<'EVALEOF'
+(() => {
+  const t = document.body.innerText;
+  const i = t.indexOf('台積電');
+  return t.slice(Math.max(0, i - 180), i + 600);   // 個股名稱(code.TW)\t投資比例%\t持有股數
+})()
+EVALEOF
+```
+
+Output is a clean table `個股名稱(code.TW)\t投資比例(%)\t持有股數`, preceded by two date
+lines — `持股分佈(依產業) 資料日期` and the holdings `持股明細 資料日期：YYYY/MM/DD`
+(cite the latter). **Caveat (Rule 2):** MoneyDJ lists only the **top 10** holdings
+(the block ends at `相關基金`). 00891 is a concentrated 30-stock ESG-screened semi ETF
+where 台積電 ~36% and the top 10 ≈ 78%+, so the top 10 captures the dominant overlap
+with 0050/0052 — but smaller shared names below #10 will be missed. If a fuller list is
+needed, a human can open the 官網 in a real (non-headless) browser.
+
+### 00904 新光臺灣半導體30 — use MoneyDJ (official site is lazy-loaded)
+
+The official 新光投信 page (`tsit.com.tw/ETF/Home/ETFSeriesDetail/00904`) loads the
+holdings behind a JS tab not present in initial `innerText`. Use **MoneyDJ**, same
+recipe as 00891 with `etfid=00904.tw`:
+
+```
+agent-browser open "https://www.moneydj.com/etf/x/basic/basic0007.xdjhtm?etfid=00904.tw"
+agent-browser wait 4500
+agent-browser eval --stdin <<'EVALEOF'
+(() => {
+  const t = document.body.innerText;
+  const i = t.indexOf('台積電');
+  return t.slice(Math.max(0, i - 180), i + 600);
+})()
+EVALEOF
+```
+
+Same **top-10-only caveat** as 00891. 00904 is even more 台積電-heavy (~41%), so top 10
+≈ 90%+ of weight — fine for the overlap analysis, with the coverage caveat surfaced.
+
+> **Note on these three semiconductor ETFs (00891/00892/00904):** all hold Taiwan
+> stocks and overlap heavily with 0050/0052 (台積電/聯發科/日月光/聯電/瑞昱/南亞科/
+> 華邦電/旺矽/創意/京元/聯詠/旺宏/世界先進…), so the common-holdings intersection is
+> meaningful. Do **NOT** confuse 00891 with **00911 兆豐洲際半導體**, which tracks the
+> ICE Semiconductor Index and holds **US** stocks (Micron/AMD/Nvidia/Broadcom…) — a
+> 國外成分股 ETF with ~zero overlap with Taiwan ETFs and not usable in this Taiwan-stock
+> picking/tracking workflow.
+
 ### Other ETFs
 
 Most Taiwan ETFs follow the same idea: find the issuer's official product page and
