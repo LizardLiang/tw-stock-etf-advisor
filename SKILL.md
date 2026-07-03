@@ -64,28 +64,87 @@ that section. The non-negotiable rules below apply to all of them.
 6. **Risk management — learned from 2026-06 post-mortem.** The following rules exist
    because a prior analysis cycle produced structurally flawed recommendations that
    would have lost money even with perfect execution. They are non-negotiable.
+   **Audit trigger:** if the user asks some form of 「所以每次結論都是不要進場嗎？」/
+   "is the conclusion always don't-enter?", treat it as a **mandatory audit signal**:
+   re-check every candidate that failed R:R for stop-regime mismatch (6a-1) and
+   TP1-based R:R (7d) *before* defending the conclusion.
 
-   **6a. Stop loss is calculated from the buy zone, not the spot price.**
+   **6a. Stop loss is calculated from the buy zone, not the spot price — and its
+   width formula depends on the entry style (see 6a-1).**
    The stop loss must give adequate room *below the entry the user is told to wait
-   for*. Formula: `stop_loss = buy_zone_bottom − max(2 × daily_range, buy_zone_bottom × 0.05)`.
-   `daily_range` = Histock's latest `最高 − 最低` for that stock (fetched during
-   Action A, not just Action C). This ensures the stop accommodates the stock's
-   actual volatility instead of using a fixed -10% from an arbitrary reference price.
+   for*. Formula: `stop_loss = buy_zone_bottom − max(2 × ATR14, buy_zone_bottom × 0.05)`.
+   `ATR14` = the 14-day Average True Range, computed from the OHLC in the local DB
+   (`TR = max(high−low, |high−prevClose|, |low−prevClose|)`, averaged over the last
+   14 sessions). This accommodates the stock's *typical* volatility instead of a fixed
+   −10%. **This 2×ATR14 formula applies to Style-1 pullback entries ONLY.** Style-2
+   breakout entries use the structural stop in 6a-1 — applying 2×ATR width to a
+   breakout inflates 1R and falsely fails R:R (the 2026-07-03 bug).
+   **Why ATR14, not a single day's range (fixed 2026-07 — the paralysis bug):** the old
+   rule used `daily_range = 最高 − 最低` of the *latest* session. After a crash or on a
+   whipsaw day that single range spikes (we saw ±7.7% on 3037 on 7/1), so `2 × range`
+   produced a stop ~20%+ below entry and every candidate's R:R "failed" → the gate never
+   said yes for two weeks. ATR14 smooths the outlier day and yields usable stops. If the
+   DB has < 14 sessions, fall back to the single-day range but **flag it as provisional**
+   and do NOT reject a candidate on R:R computed from a lone spike day — recompute once
+   ATR14 is available.
+
+   **6a-1. Stop-width regime — match the stop to the entry style (fixed 2026-07-03).**
+
+   | Entry style | Stop reference | Formula |
+   |---|---|---|
+   | Style-1 pullback | buy zone bottom (support level) | `bottom − max(2×ATR14, bottom×5%)` |
+   | Style-2 breakout | **breakout pivot** (base TOP / reclaimed prior high) | just under the pivot, honoring the 5% floor below entry — **NOT 2×ATR, NOT the base low** |
+
+   Why: a Style-2 entry is only valid while the breakout holds; if price falls back
+   below the pivot the thesis is dead — waiting out a 2×ATR-wide stop down to the
+   base low just donates the difference. On 2026-07-03, 2383's 2×ATR stop (−11%,
+   1R 685) made a real 2.8 R:R read as 1.3 → false "等回測". The structural stop
+   5,650 (−5.4%, 1R 320) was correct. **The over-wide stop is the paralysis
+   mechanism itself.** Enforced mechanically by `scripts/screen.mjs`: the `--style`
+   flag selects the formula, and a Style-2 run without `--pivot` hard-errors
+   instead of silently falling back to 2×ATR.
 
    **6b. Technical entry gate — must pass BEFORE recommending.**
    Every candidate stock must have its Histock technicals fetched and evaluated
-   *before* it enters the recommendation list. A stock that fails any of these is
-   excluded or flagged "等待進場條件成立":
-   - RSI6 > 70 → overbought, do not recommend entry
+   *before* it enters the recommendation list. There are **two valid entry styles**;
+   a candidate qualifies if it passes *either*. Do not force every stock through the
+   pullback gate — that biases the whole system toward permanent "wait" in trending /
+   post-crash-recovery tapes (the paralysis bug, 2026-07).
+
+   **Style 1 — Pullback entry (buy weakness into support).** Use when the stock is
+   near a moving average / consolidation floor. Fails (→ exclude or flag
+   "等待進場條件成立") if any of:
+   - RSI6 > 70 → overbought, wait for a pullback
    - KD K9 > 80 → overbought zone
    - Price far above 20MA (> 10%) → extended, wait for pullback
    - KD 死亡交叉 (K < D and declining) → bearish momentum, wait
 
-   **6c. No-chase rule.**
-   If a stock is already up > 3% intraday at the time of analysis, mark it "勿追高，
-   等下一交易日" and do NOT include it in the buy zone — give the buy zone for a
-   future pullback scenario only. Never set a buy zone that includes today's price
-   when the stock is rallying.
+   **Style 2 — Breakout entry (buy strength out of a base).** This is the
+   O'Neil/Minervini path the correlation rules cite (6e) but the old gate never
+   implemented. A stock qualifies as a breakout buy — *even if it is somewhat extended
+   or RSI is elevated* — when ALL of:
+   - It is breaking **out of a recognizable base/consolidation** (a multi-session
+     sideways range, a flag, or a reclaim of a prior pivot high), not spiking in open air.
+   - **Volume confirms** (Rule 6j): breakout-day 量 > 5-day average (ideally > 1.5×).
+   - KD is a golden cross (K > D and rising); MACD rising / turning positive.
+   - RSI6 ≤ 80 (a breakout can run hot to ~70–80; only reject > 80 climax readings).
+   - The stop just under the **breakout pivot** (per 6a-1 — not 20MA, not the base
+     low) yields R:R to the **reward target** (TP2/measured-move, per step 7d — never
+     TP1) ≥ 1:1.5. If even the pivot-stop reward-target R:R fails, it is extended —
+     pass and wait for the next base.
+   For a Style-2 buy the buy zone is the **breakout level up to +2~3% above it**
+   (buying the breakout), not a lower pullback zone — say which base is breaking and
+   where its floor (the stop reference) sits.
+
+   **6c. No-chase rule — applies to spikes, NOT to base breakouts.**
+   If a stock is up > 3% on the session as an **isolated spike in open air** (no base
+   breakout, or it is the 2nd+ consecutive extended up-day far above 20MA), mark it
+   "勿追高，等下一交易日" and give the buy zone for a future pullback only. **But** a
+   > 3% move that IS a volume-confirmed Style-2 breakout from a base is the *entry
+   signal itself*, not a chase — do not exclude it under 6c; buy the breakout per 6b
+   Style 2. Distinguish the two explicitly in the writeup (spike vs base-breakout) so
+   the reason is auditable. Never set a pullback buy zone that includes today's price
+   when a stock is merely spiking without a base.
 
    **6d. Staged take-profit, not a single far target.**
    Replace the old "+15~20% single target" with staged exits:
@@ -256,18 +315,28 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
    trigger conditions will be evaluated in step 5** — they get priority since the
    user is already tracking them.
 
-5. **Fetch technicals for EVERY candidate + held stocks + watchlist — BEFORE
-   recommending.** The fetch list includes: (a) new candidates from step 4,
-   (b) currently held stocks from step 3.5b, (c) watchlist stocks from step 3.5c.
+5. **Screen EVERY candidate + held stocks + watchlist — BEFORE recommending.** The
+   list includes: (a) new candidates from step 4, (b) currently held stocks from
+   step 3.5b, (c) watchlist stocks from step 3.5c.
 
-   For each stock, fetch Histock data (recipe in `references/data-sources.md`) to
-   get: MA5/10/20, K9, D9, RSI6, RSI12, MACD, the day's OHLC (for daily_range
-   = 最高 − 最低), **the day's volume and 5-day average volume (for Rule 6j)**. Also
-   fetch the Yahoo live quote, **the next earnings/法說 date (Rule 6h), and the
-   ex-dividend 除權息 date (Rule 6i)** — recipes for all of these in
-   `references/data-sources.md`. This step is mandatory — a stock cannot enter the
-   recommendation list without passing the technical entry gate (Rule 6b) AND the
-   event gate (Rules 6h, 6i):
+   **The numbers come from the script, not from hand-math or Histock scraping.**
+   First top up history (`fetch-history.mjs <code> --months 1` per stock), then run
+   `node --experimental-sqlite scripts/screen.mjs <code1> <code2> …` (all codes in
+   one call; CLI + JSON glossary in `references/charting.md` §9). It computes, per
+   stock, from the local OHLC DB: OHLC/chg%, MA5/10/20, 20MA deviation,
+   aboveMA20Streak, **ATR14 (Rule 6a)**, 量/5日均量 ratio (**Rule 6j**), K9/D9,
+   RSI6/12, MACD (DIF/signal/OSC), the derived signal booleans (KD 金叉/死叉, MACD
+   rising, 過熱, 勿追高…), and the **Rule 6b gate verdicts** (`gate.style1.pass` +
+   `failures[]`, `gate.style2Partial`). KD/RSI match Histock exactly; only fetch
+   Histock as a **spot-check** when the script sets `gate.histockSpotCheck: true`
+   (a reading within ±3 of a threshold) or the DB has too little history.
+
+   Still fetched from the web (not computable from the DB): the Yahoo live quote
+   (the DB close is the last settled session — T-1 during market hours), **the next
+   earnings/法說 date (Rule 6h), and the ex-dividend 除權息 date (Rule 6i)** —
+   recipes in `references/data-sources.md`. This step is mandatory — a stock cannot
+   enter the recommendation list without passing the technical entry gate (Rule 6b)
+   AND the event gate (Rules 6h, 6i):
    - RSI6 > 70 → **exclude** (overbought)
    - KD K9 > 80 → **exclude** (overbought zone)
    - Price > 20MA by more than 10% → **flag** "已過熱，等拉回再議"
@@ -301,28 +370,51 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
    *why not* the obvious alternatives. If the user asks for N picks but fewer than N
    pass the screen, say so — never pad the list with stocks that failed the gate.
 
-7. **Entry/exit plan (mandatory for every recommendation).** For each recommended
-   stock:
+7. **Entry/exit plan (mandatory for every recommendation).** Pick the stop regime
+   per 6a-1 *before* computing R:R — style determines stop width, stop width
+   determines 1R, 1R determines the verdict. **All numbers in this step come from
+   the script**: `node --experimental-sqlite scripts/screen.mjs <code> --style 1|2
+   --zone LO-HI [--pivot P] [--target T] [--equity E]` returns stop, TP1/TP2, 1R,
+   R:R verdict, and share sizing in one JSON. The model supplies the judgment
+   inputs (style, buy zone, breakout pivot, measured-move target) and MUST NOT
+   hand-compute stop/TP/R:R/shares — hand-math caused both paralysis bugs. The
+   script hard-errors on Style-2 without `--pivot` (no silent 2×ATR fallback).
+   For each recommended stock:
 
-   a. **Buy zone**: anchor to a real technical level — 20MA, recent consolidation
-      floor, or key support visible in the price action. State which level and why.
-      Never use "spot price minus X%". If the stock is already at/near support, the
-      buy zone can include the current price; if it's extended above support, the buy
-      zone sits lower and the user waits.
+   a. **Buy zone**: anchor to a real technical level. For a **Style-1 pullback** buy
+      (6b) that's the 20MA / consolidation floor / key support. For a **Style-2
+      breakout** buy that's the **breakout pivot up to +2~3% above it** (you buy the
+      breakout, not a lower pullback). State which style and which level, and why.
+      Never use "spot price minus X%". A Style-2 buy zone legitimately includes today's
+      price when a volume-confirmed base breakout is in progress (6c does not block it).
 
-   b. **Stop loss**: `buy_zone_bottom − max(2 × daily_range, buy_zone_bottom × 0.05)`.
-      Use the daily_range from Histock OHLC fetched in step 5. Always express as
-      both a price and the % below buy zone bottom. If the resulting stop is tighter
-      than 5% below buy zone bottom, widen it — tight stops on volatile stocks get
-      triggered by normal noise (Rule 6a).
+   b. **Stop loss** — per the 6a-1 regime table. For a **Style-1 pullback**:
+      `buy_zone_bottom − max(2 × ATR14, buy_zone_bottom × 0.05)`, with **ATR14**
+      computed from the local OHLC DB (Rule 6a), not a single session's range.
+      For a **Style-2 breakout**: the structural stop **just under the breakout
+      pivot (base top / reclaimed high)**, honoring the 5% floor below entry —
+      do NOT use the base low and do NOT use 2×ATR14; both belong to Style-1
+      (mis-applying them was the 2026-07-03 bug). Always express as both a price
+      and the % below buy zone bottom. If tighter than 5%, widen to the 5% floor.
 
    c. **Staged take-profit** (Rule 6d):
       - TP1: +8% from buy zone midpoint → scale out ½, move stop to breakeven
       - TP2: +15% → scale out remainder or trail with 5MA
       Express both as prices.
 
-   d. **Risk/reward summary**: show risk (entry → stop) vs reward (entry → TP1) in
-      points and %. The R:R to TP1 should be at least 1:1.5; if it's worse, flag it.
+   d. **Risk/reward summary — measure reward against TP2/trend, NOT TP1.** TP1 (+8%)
+      is a *partial de-risk scale-out*, not the reward leg — with a 2×ATR14 stop it is
+      typically only ~0.5R, so a "R:R to TP1 ≥ 1.5" test is mathematically unsatisfiable
+      for volatile semis and was a paralysis bug (2026-07). Instead: express risk in
+      **R** (`1R = entry − stop`), and judge viability by the R:R to the **reward
+      target** = TP2 (+15%) or a measured-move / prior-swing-high target, whichever the
+      structure supports. Require **R:R to the reward target ≥ 1:1.5**; TP1 is reported
+      separately as the point where you take half off and move to breakeven (de-risk),
+      not as the reward. If even the reward-target R:R < 1.5, *then* flag/pass.
+      **Before flagging/passing on R:R < 1.5, audit the stop width against 6a-1**:
+      if a Style-2 candidate was computed with a 2×ATR stop (or a stop anchored to
+      the base low), recompute with the structural pivot stop first. A failed R:R
+      with a mismatched stop regime is not a signal — it is the bug.
 
    e. **Position sizing (Rule 6e-2, 6e-3).** For each stock, calculate:
       `shares = (account_equity × 0.01) / (entry − stop)`.
@@ -506,3 +598,8 @@ TWSE 民國-date gotcha, and the exact CLI for every step.
   has the DB path resolution, the TWSE 民國-date (+1911) gotcha, the marker glyph/colour map,
   and every script's exact CLI. The charting scripts are zero-dependency Node (built-in
   `node:sqlite` + global `fetch`); always invoke with `node --experimental-sqlite`.
+- `scripts/screen.mjs` is the **rule-math engine** (Action A steps 5 & 7): screening mode
+  computes indicators + Rule 6b gate verdicts from the local DB; trade-plan mode
+  (`--style/--zone/--pivot/--target/--equity`) computes the 6a-1 stop, TP1/TP2, R:R
+  verdict, and 6e-2 sizing. The model never hand-computes these numbers. CLI + JSON
+  glossary in `references/charting.md` §9.

@@ -25,6 +25,7 @@ node --experimental-sqlite <skill>/scripts/<name>.mjs …
 6. Rendering the chart
 7. Tokyo Night palette + marker glyph/colour map
 8. When to fetch / refresh (avoid hammering TWSE)
+9. Screening & trade-plan math (`screen.mjs`)
 
 ---
 
@@ -158,3 +159,60 @@ ever wants the Western scheme. Markers use their own colours/glyphs so they neve
   newest sessions current, then re-render.
 - Don't loop fetches across many stocks without the built-in throttle; TWSE will start returning
   errors. The script already sleeps between month-calls.
+
+## 9. Screening & trade-plan math (`screen.mjs`)
+
+The rule-math engine. All deterministic arithmetic (indicators, gate thresholds, stops, R:R,
+sizing) lives here — the model supplies judgment inputs and reads back JSON. Hand-computing
+these numbers caused both 2026-07 paralysis bugs; don't.
+
+### Mode 1 — screening (indicators + Rule 6b gate)
+
+```
+node --experimental-sqlite scripts/screen.mjs <code> [<code>...] [--date YYYY-MM-DD]
+```
+One JSON line per code, computed from the local `ohlc` table (top up with
+`fetch-history.mjs <code> --months 1` first). Fields:
+
+- price/volume: `date open high low close chgPct volume vol5avg volRatio`
+  (`vol5avg` = mean of the **prior** 5 sessions; `volRatio > 1` = Rule 6j confirmed, `≥ 1.5` strong)
+- MAs: `ma5 ma10 ma20 devFrom20Pct maAligned(bull|bear|mixed) aboveMA20Streak`
+  (streak = consecutive closes above that day's MA20 — feeds "站回20MA連N日")
+- `atr14 atrPct atrProvisional` — Rule 6a simple mean of the last 14 TRs; `atrProvisional: true`
+  when < 15 sessions (do NOT reject on R:R computed from it)
+- indicators: `k9 d9` (KD 9,3,3 — matches Histock exactly), `rsi6 rsi12` (Wilder — matches
+  exactly), `dif macdSignal osc` (MACD 12,26,9). **Histock's displayed「MACD」number is the
+  signal line (`macdSignal`)**, not DIF. MACD converges to ~±10% with a 3-month warmup; fetch
+  6 months of history if tighter agreement matters.
+- `signals`: booleans — `kdGolden kdDeath macdRising rsi6Gt70 rsi6Gt80 k9Gt80 extendedGt10
+  dayGainGt3 volConfirmed volStrong`
+- `gate.style1`: `{ pass, failures[] }` — the four Rule 6b Style-1 checks
+- `gate.style2Partial`: the four mechanical Style-2 checks (`volConfirmed kdGolden macdRising
+  rsi6LE80`); base-structure recognition and R:R stay with the model (pivot is a judgment input)
+- `gate.histockSpotCheck`: `true` when a reading sits within ±3 of a gate threshold (RSI6 near
+  70/80, K9 near 80, dev near 10%) → only then fetch Histock to cross-check. Otherwise skip the
+  browser entirely; the script is the indicator source.
+
+Computed rows are cached into the `indicators` table (idempotent upsert).
+
+### Mode 2 — trade plan (Rule 6a-1 stop enforced by code)
+
+```
+node --experimental-sqlite scripts/screen.mjs <code> --style 1|2 --zone LO-HI \
+     [--pivot P] [--target T] [--equity E] [--date YYYY-MM-DD]
+```
+- `--style 1` (pullback): `stop = zone_bottom − max(2×ATR14, bottom×5%)`
+- `--style 2` (breakout): **requires `--pivot`** (base top / reclaimed high);
+  `stop = min(pivot×0.99, bottom×0.95)`. Omitting `--pivot` is a **hard error** — the script
+  refuses to fall back to 2×ATR (that silent regime swap was the 2026-07-03 bug).
+- `--target`: measured-move / prior-high reward target; defaults to TP2 (+15% from zone mid)
+- `--equity`: account equity → `sizing.shares = floor(equity×1% / 1R)` (Rule 6e-2; apply the
+  2% per-theme heat cap manually across correlated picks, Rule 6e-3)
+
+Output JSON: `style zone pivot atr14 stop stopPctBelowBottom tp1 tp2 rewardTarget oneR rr
+rrPass notes[] sizing? gate` — `rr` is measured mid→target per Rule 7d (never TP1); `notes[]`
+explains which stop branch fired (audit trail). R:R at the zone **bottom** is more favourable
+than at mid — a `rrPass: false` at mid with a pass at bottom = "只在買區下緣進" (e.g. 3711
+2026-07-03: mid 1.33 fail, bottom 1.49 pass → deep-pullback-only entry).
+
+Exit codes: missing OHLC / bad inputs / Style-2 without pivot → exit 1 with a message.
