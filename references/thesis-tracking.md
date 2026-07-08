@@ -29,7 +29,9 @@ up: ["[[stock]]"]
 # <code> <name> 進場論點
 
 ## 進場論點
-<entry rationale, ≤5 sentences — the story, the timeframe, why now>
+<entry rationale, ≤5 sentences — the story, the timeframe, why now. When the
+source analysis note completed Rule 6p's mirror test for this pick, seed this
+section verbatim from those 5 sentences instead of re-deriving them.>
 
 ## 核心假設
 | # | 假設 | 驗證方式 | 狀態 |

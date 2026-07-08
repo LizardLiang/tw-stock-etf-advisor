@@ -331,6 +331,42 @@ that section. The non-negotiable rules below apply to all of them.
    classification are in `references/thesis-tracking.md` — read it before Action B's
    thesis step and Action C's re-score step.
 
+   **6p. 鏡子測試 — 說不完整就不進場 (added 2026-07-08).** Rules 6b–6o are all veto
+   gates — they can only say no. This is the affirmative half: before any stock is
+   presented as a buy (not a watchlist item), complete a 5-sentence mirror test.
+   A completed test is documented conviction; an incomplete one demotes the pick to
+   觀察名單, never a buy.
+
+   1. 進場型態與觸發:「這是 Style-<1|2|3> <型態>，觸發條件是 <trigger/base>，量能
+      <X>× 5日均量」
+   2. 買區與停損:「買區 <lo–hi>（錨定 <technical level>），停損 <price>（<style 依
+      6a-1>，−<X>%）」
+   3. 失效條件:「如果 <condition，e.g. 收回跌破 pivot / 反轉日低點>，論點死亡，無條件
+      出場」
+   4. 部位與熱度:「<shares> 股（1% 風險），同主題合計熱度 <X>%（上限 2%）」
+   5. 最壞情況:「停損打到虧 <NTD>（<X>% of equity），我接受」
+
+   Rules:
+   - Sentences 2/4/5 quote `screen.mjs` trade-plan JSON values verbatim — no
+     hand-math, same discipline as step 7.
+   - **Positive-gate-only clause**: this test runs AFTER 6b/6h/6i/6j and the R:R
+     check have passed; it may NOT re-veto a condition those gates already
+     cleared. It fails a candidate only when a sentence's element is missing or
+     unstatable — e.g. a Style-2 candidate with no recognizable base has sentence
+     1 unstatable → 觀察名單, even though RSI/KD/volume all passed. The missing
+     base fails it, not a re-judgment of the technicals that already cleared.
+   - Failure output: "鏡子測試未過：缺 <element> → 轉觀察名單" plus a concrete
+     trigger condition with its validity band (6l).
+   - Equity absent: state sentences 4–5 in 1R-per-share + percentage terms,
+     flagged "提供 account_equity 後換算股數" — the test still passes. An
+     unprovided equity is a user-input gap, not a market fact that can fail it.
+   - ATR provisional (thin DB, 6a fallback): sentence 2 carries the provisional
+     flag — the test still passes.
+
+   Why: the veto gates (6b–6o) prevent bad entries; the mirror test proves a
+   good one — it is the counterweight that turns "nothing vetoed it" into
+   "here is the complete case".
+
 ---
 
 ## Action A — ETF common-holdings analysis & recommendation
@@ -512,6 +548,13 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
    f. **Entry protocol (Rule 6e-5).** State: "先買 50% 部位（試單），確認站穩
       2 個交易日後再加碼剩餘 50%。試單觸停損則不加碼，全部出場。"
 
+   g. **Mirror test (Rule 6p).** For every recommended stock, complete all 5
+      sentences and list them; missing any sentence demotes that stock to
+      觀察名單 with its trigger condition and validity band (6l) instead of a
+      buy. Sentences 1–3 draw on this step's 7a–b judgment (style, buy zone,
+      invalidation); sentences 4–5 draw on the 7e sizing output (shares, theme
+      heat, worst-case loss).
+
 8. **Theme-level stop disclosure (Rule 6e-4).** If recommending 2+ stocks from the
    same theme, include a theme stop table:
    - 合計虧損 −10%: 減半（賣最弱一檔）
@@ -519,7 +562,10 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
    - 合計虧損 −20%: 全部出場，等待重新進場條件
 
 9. **Offer to persist** the analysis via Eliot (stock note + `[[stock]]` log). Don't
-   write without the user's go-ahead. The persisted note MUST include a
+   write without the user's go-ahead. The persisted note's 結論／推薦 section MUST
+   carry each recommended pick's completed 5-sentence mirror test (Rule 6p)
+   verbatim — this is what Action B's thesis draft (Rule 6o /
+   `references/thesis-tracking.md`) seeds 進場論點 from. The note MUST also include a
    `### 觀察名單` section listing each watchlist stock with its specific trigger
    condition — this is what step 3.5 reads in the next session. Format each entry
    as: `- <code> <name>：<trigger condition>（有效帶 <lo>-<hi>）` — the validity band
