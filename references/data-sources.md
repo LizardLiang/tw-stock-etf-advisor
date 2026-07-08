@@ -16,6 +16,38 @@ EVALEOF
 
 ---
 
+## 交叉驗證 (cross-source deviation, Rule 3a)
+
+When the same figure at the same timestamp comes from two sources, resolve the
+conflict against the declared **primary** below, then check the deviation against
+the thresholds in Rule 3a.
+
+| Figure type | Primary source | Notes |
+|---|---|---|
+| 已收盤 OHLC (settled) | TWSE (上市) / TPEx (上櫃) official data | the local DB's OHLC history should trace back to these |
+| 即時報價 (live quote) | Yahoo 股市 | apply the 10% plausibility bound vs. last settled close (Rule 3a) — a live quote isn't "verified" against TWSE mid-session, just sanity-checked |
+| ETF 成分/權重 | 投信官網 (fund company site) | Yahoo shows top-10-only and can lag weeks (Rule 2) — never treat Yahoo's weight as the verified figure when the 官網 disagrees |
+| 財報/除權息/公告 (events) | MOPS (公開資訊觀測站) | Yahoo/Histock event dates are convenience fetches, not verification |
+
+**Documented common causes of legitimate deviation** — when flagging, check against
+this list and name the matching cause; an unexplained >5% deviation stays blocked:
+
+- **T-1 vs live timing** — the DB's last close vs. a live intraday quote (this is the
+  timing exemption in Rule 3a, not a conflict at all).
+- **除權息還原 (adjusted) vs raw series** — one source back-adjusts historical closes
+  for dividends, the other doesn't; state which series the analysis uses.
+- **上市 vs 上櫃 mixup** — fetching the TWSE recipe for a TPEx-listed code (or vice
+  versa) returns a different company's/market's data entirely.
+- **TWSE 民國-date parsing (+1911)** — a date field misread as the Gregorian year
+  instead of ROC year throws OHLC rows onto the wrong session.
+
+**Worked example**: Yahoo shows a constituent's weight at 8.1%; the 元大官網 shows
+9.3% for the same 交易日. Deviation is 1.2 percentage points on a >1% base → 標註
+per Rule 3a: use the 元大官網 value (9.3%), note both figures and their respective
+資料時間 (data-as-of dates) in the output.
+
+---
+
 ## ETF full holdings — use the official 投信 site (NOT Yahoo)
 
 Yahoo's holdings tab shows only the **top 10** and its `資料時間` can lag weeks. The

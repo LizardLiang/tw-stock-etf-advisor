@@ -45,6 +45,24 @@ that section. The non-negotiable rules below apply to all of them.
    its own timestamp (holdings vs. weights vs. price). If something looks old, say so
    rather than presenting it as current.
 
+3a. **Cross-source deviation — compare before trusting either number.** When the
+    same figure at the same timestamp is available from two sources, compare them.
+    **Prices/weights**: >1% deviation → 標註 (show both values, use the primary's);
+    >5% deviation → 封鎖 (the figure enters NO gate/stop/sizing computation until
+    the primary is re-fetched and confirms which value is real). **0–100 indicators**
+    (K/D/RSI): use absolute deviation (±3), not percentage — the existing histock
+    spot-check convention (Action A step 5 cites it as "per 3a").
+    **Timing exemption**: a live quote vs. the local DB's T-1 close is NOT a
+    conflict — different timestamps, not a disagreement. Apply a plausibility bound
+    instead: |live − last settled close| > 10% (Taiwan's 漲跌停 limit) is presumed a
+    fetch/parse error (wrong ticker, stale page) → re-fetch before analyzing, never
+    treat it as a real move.
+    **"Verified"** means re-fetched from the declared primary with value + timestamp
+    cited — never assert verification without a fetch.
+    Primary hierarchy, causes table, and a worked example are in
+    `references/data-sources.md` §交叉驗證. (Distinct from Rule 6q: 3a governs
+    conflicting data; 6q governs missing data.)
+
 4. **This is not professional investment advice.** End every recommendation with a
    short risk/disclaimer line. Taiwan AI-theme stocks are volatile with deep
    pullbacks — remind the user to verify the latest price/financials and honor stops.
@@ -418,7 +436,9 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
 1. **Fetch full holdings for each ETF from the official 投信 site** (not Yahoo).
    See `references/data-sources.md` for the URL per ETF and the exact
    `agent-browser` extraction recipe (the tables are div-based — read `innerText`
-   around a known holding, don't rely on `querySelectorAll('table')`).
+   around a known holding, don't rely on `querySelectorAll('table')`). 權重與官網差
+   >1% 依 3a 標註 (if Yahoo's weight for the same holding is ever consulted and
+   disagrees with the 官網 by more than 1%, flag per Rule 3a and use the 官網 value).
 
 2. **Compute the intersection** by stock code. Build a table of common holdings with
    each ETF's weight side by side, sorted by weight. Note which large holdings are
@@ -486,7 +506,7 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
    rising, 過熱, 勿追高…), and the **Rule 6b gate verdicts** (`gate.style1.pass` +
    `failures[]`, `gate.style2Partial`). KD/RSI match Histock exactly; only fetch
    Histock as a **spot-check** when the script sets `gate.histockSpotCheck: true`
-   (a reading within ±3 of a threshold) or the DB has too little history.
+   (a reading within ±3 of a threshold, per 3a) or the DB has too little history.
 
    Still fetched from the web (not computable from the DB): the Yahoo live quote
    (the DB close is the last settled session — T-1 during market hours), **the next
@@ -692,6 +712,11 @@ per-holding sell recommendation.
 
 2. **Fetch fresh data per holding:**
    - **Live quote** from Yahoo (price recipe in `references/data-sources.md`).
+     **Plausibility bound (Rule 3a) before it feeds the stop/TP comparison in
+     step 5**: if the live quote deviates > 10% from the last settled DB close,
+     treat it as a suspect fetch (wrong ticker/stale page/parse error) and
+     re-fetch rather than compare against 停損/停利 — a parse error must not fake
+     a stop breach.
    - **Current ETF membership & weight**: re-fetch the relevant ETF holdings from the
      官網 and check whether the stock is still a constituent and at what weight.
    - **Technical indicators** from Histock (recipe in `references/data-sources.md`):
