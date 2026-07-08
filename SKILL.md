@@ -367,6 +367,47 @@ that section. The non-negotiable rules below apply to all of them.
    good one — it is the counterweight that turns "nothing vetoed it" into
    "here is the complete case".
 
+   **6q. 資料充足度分級 (A/B/C) — 沒有資料就沒有訊號 (added 2026-07-08).** Before
+   analyzing any candidate, rate its data availability from five named checks. This
+   generalizes 6a's provisional-ATR fallback (a B-level precedent) into a
+   system-wide honesty rule: thin Taiwan small caps and sparse ETF constituents
+   should get an honest "no signal" instead of a forced recommendation or a fake
+   gate failure.
+
+   1. **本地 OHLC 歷史深度** — ≥60 sessions = 全指標可信；14–59 = 部分（ATR 可用但
+      趨勢指標弱）；<14 = 不足。
+   2. **即時報價可得**。
+   3. **技術指標可算**（`screen.mjs` 能跑，不 hard-error）。
+   4. **事件日可查**（財報日 6h、除權息日 6i）。
+   5. **流動性**（成交量夠大，停損才有意義 — 5日均量過低者標 C）。
+
+   **Rating**:
+   - **A** = 全過 → 正常分析。
+   - **B** = 非關鍵缺口 → 照常分析但逐項點名缺口、偏保守（6a 的 provisional-ATR 即
+     B 級先例）。
+   - **C** = 關鍵缺口 → 「資料不足，不給訊號」。
+
+   **先補再降級**: thin local history → 先跑 `fetch-history.mjs <code> --months N`
+   （上櫃加 `--market tpex`）再評級；**C 只在缺口撐過補抓之後才成立**（新上市、極端
+   冷門、來源不可達）。絕不用未補抓的資料直接判 C。
+
+   **C 級輸出規格**: 排除在推薦之外，歸類到獨立的「資料不足」類別 — **不與技術面
+   gate failure 混列**（這個區分讓 audit trail 誠實：gate 沒有說話，是因為它無法
+   判斷，而不是判斷後說不）；必須附具體升級路徑（「另補 N 個交易日後重評」/「補
+   財報日後重評」）。**非懲罰性**：C 判定是完整答案；絕不為了湊滿 N 檔而灌水
+   （呼應 Action A step 6 的 no-padding 規則）。
+
+   **Worked examples**:
+   - 新上市股，補抓歷史後僅剩 8 個交易日 → **C**，「資料不足，另補 6+ 個交易日後
+     重評」，不進推薦清單也不算技術面未過關。
+   - 對照：3037 有 4 個月本地歷史，但查不到法說日 → **B**（歷史深度過關，僅事件
+     日缺口，屬非關鍵）；分析照常進行，點名 6h 缺口 + 「財報日未確認，事件風險未
+     濾」但書。
+
+   Why: forcing a signal out of missing data is how thin small caps turn into
+   unbounded risk — an unverifiable earnings date defeats 6h, an uncomputable ATR
+   defeats 6a, and thin volume defeats the stop itself.
+
 ---
 
 ## Action A — ETF common-holdings analysis & recommendation
@@ -435,7 +476,10 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
    **The numbers come from the script, not from hand-math or Histock scraping.**
    First top up history (`fetch-history.mjs <code> --months 1` per stock), then run
    `node --experimental-sqlite scripts/screen.mjs <code1> <code2> …` (all codes in
-   one call; CLI + JSON glossary in `references/charting.md` §9). It computes, per
+   one call; CLI + JSON glossary in `references/charting.md` §9). **This top-up-then-
+   screen order is also when the Rule 6q 資料充足度分級 (A/B/C) is computed** — rate
+   each stock from the five named checks only AFTER this fetch, never before
+   (fetch-before-downgrade). It computes, per
    stock, from the local OHLC DB: OHLC/chg%, MA5/10/20, 20MA deviation,
    aboveMA20Streak, **ATR14 (Rule 6a)**, 量/5日均量 ratio (**Rule 6j**), K9/D9,
    RSI6/12, MACD (DIF/signal/OSC), the derived signal booleans (KD 金叉/死叉, MACD
@@ -481,13 +525,20 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
 
    Present a technical screening table for all new candidates showing pass/fail so
    the user sees why certain stocks were excluded. Include columns for **量/5日均量
-   (Rule 6j)**, **下次財報日 (Rule 6h)**, and **除權息日 (Rule 6i)** alongside the
-   technical indicators, so event and volume exclusions are visible in the same table.
+   (Rule 6j)**, **下次財報日 (Rule 6h)**, **除權息日 (Rule 6i)**, and **資料級
+   (Rule 6q, A/B/C)** alongside the technical indicators, so event, volume, and
+   data-richness exclusions are visible in the same table. **List C-rated
+   candidates separately in their own 「資料不足」bucket** with the upgrade path
+   stated — do not fold them into the pass/fail gate rows; the distinction keeps
+   the audit trail honest (the gate said nothing because it could not, per 6q).
 
 6. **Recommend stock(s) from the candidates that passed.** For each pick explain
    *why* (weight rank, structural theme, what it does, technical posture) and briefly
    *why not* the obvious alternatives. If the user asks for N picks but fewer than N
    pass the screen, say so — never pad the list with stocks that failed the gate.
+   State "資料不足 X 檔" alongside "未過關 Y 檔" so the user sees why the list is
+   short — C-rated candidates (Rule 6q) never count toward N picks, same
+   non-padding discipline.
 
 7. **Entry/exit plan (mandatory for every recommendation).** Pick the stop regime
    per 6a-1 *before* computing R:R — style determines stop width, stop width
@@ -646,6 +697,9 @@ per-holding sell recommendation.
    - **Technical indicators** from Histock (recipe in `references/data-sources.md`):
      MA5/10/20, K9, D9, RSI6, RSI12, MACD. These are daily-close values (T-1 during
      market hours).
+   - **Data-richness rating (Rule 6q)**: rate the holding for context only — a C
+     rating flags its indicators as unreliable but never skips the 停損/停利-vs-live-
+     quote comparison in step 5; a held position is never skipped for data thinness.
 
 3. **異動歸因 (move attribution) — trigger-gated, not run per-holding by default.**
    This answers the review's real question: did the move break the setup, or is it
