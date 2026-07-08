@@ -10,11 +10,14 @@
 //   node --experimental-sqlite scripts/screen.mjs <code> [<code>...] [--date YYYY-MM-DD]
 //
 // Mode 2 — trade plan (single code + judgment inputs; enforces Rule 6a-1 stop regime):
-//   node --experimental-sqlite scripts/screen.mjs <code> --style 1|2 --zone LO-HI \
-//        [--pivot P] [--target T] [--equity E]
+//   node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3 --zone LO-HI \
+//        [--pivot P] [--revlow L] [--target T] [--equity E]
 //   style 1 (pullback):  stop = zone_bottom − max(2×ATR14, bottom×5%)
 //   style 2 (breakout):  REQUIRES --pivot; stop = min(pivot×0.99, bottom×0.95)
 //                        (just under the pivot, honoring the 5% floor — never 2×ATR)
+//   style 3 (reversal):  REQUIRES --revlow (reversal-day low); stop = min(revlow×0.99,
+//                        bottom×0.95). Base-inside reversal-day entry (Rule 6b Style-3,
+//                        added 2026-07-08); pilot 50% only, close < revlow = out.
 //
 // Indicators are computed from the local OHLC DB (TWSE settled closes). Values converge
 // with Histock to ~±1–2 given the ~3-month warmup; Histock is a spot-check, not the
@@ -180,6 +183,9 @@ function screenCode(db, code, dateOpt) {
     aboveMA20Streak: streak,
     atr14: r1(atr), atrPct: (atr && last.close) ? r2(atr / last.close * 100) : null,
     atrProvisional: provisional,
+    // Rule 6m (2026-07-08): ATR > 6% makes the 2×ATR Style-1 stop fail R:R across almost
+    // the whole zone by construction — declare the regime instead of serial R:R fails.
+    atrHot: (atr && last.close) ? atr / last.close * 100 > 6 : false,
     k9: r2(k9), d9: r2(d9), rsi6: r2(rsi6), rsi12: r2(rsi12),
     dif: r2(dif), macdSignal: r2(macdSig), osc: r2(osc),
     signals: {
@@ -224,6 +230,19 @@ function tradePlan(db, code, opts) {
     notes.push(atrDist >= floorDist
       ? `stop width = 2×ATR14 (${r1(atrDist)}) > 5% floor (${r1(floorDist)})`
       : `stop widened to the 5% floor (${r1(floorDist)}) — 2×ATR14 (${r1(atrDist)}) was tighter`);
+    if (scr.atrHot) notes.push(`Rule 6m: ATR ${scr.atrPct}% > 6% — pullback path is regime-closed; only the zone bottom can pass R:R. Prefer Style-2 breakout or Style-3 reversal until ATR contracts.`);
+  } else if (opts.style === 3) {
+    // Rule 6b Style-3 (2026-07-08): reversal-day entry inside an established base.
+    // Structural stop just under the reversal-day low, honoring the 5% floor.
+    if (opts.revlow == null) {
+      return { code, error: 'Style-3 requires --revlow (the reversal day\'s low). Refusing to guess — the stop IS the thesis (close back below the reversal low kills it).' };
+    }
+    const revStop = opts.revlow * 0.99, floorStop = bottom * 0.95;
+    stop = Math.min(revStop, floorStop);
+    notes.push(revStop <= floorStop
+      ? `stop = just under reversal-day low ${opts.revlow} (${r1(revStop)})`
+      : `reversal-low stop ${r1(revStop)} tighter than the 5% floor — widened to ${r1(floorStop)} (Rule 6a-1)`);
+    notes.push('Style-3: pilot 50% ONLY; add only after the base top breaks out (then Style-2 rules take over); close < reversal low = out, no averaging (Rule 6b Style-3)');
   } else {
     // Rule 6a-1 Style-2: structural stop just under the pivot, honoring the 5% floor.
     // NEVER 2×ATR — mis-applying the pullback width was the 2026-07-03 paralysis bug.
@@ -248,7 +267,8 @@ function tradePlan(db, code, opts) {
     code, date: scr.date, close: scr.close, style: opts.style,
     zone: { bottom: lo, top: hi, mid: r1(mid) },
     pivot: opts.pivot ?? null,
-    atr14: scr.atr14, atrProvisional: scr.atrProvisional,
+    revlow: opts.revlow ?? null,
+    atr14: scr.atr14, atrProvisional: scr.atrProvisional, atrHot: scr.atrHot,
     stop: r1(stop), stopPctBelowBottom: r2((bottom - stop) / bottom * 100),
     tp1: r1(tp1), tp2: r1(tp2), rewardTarget: r1(target),
     oneR: r1(oneR), rr: r2(rr), rrPass,
@@ -278,7 +298,7 @@ function main() {
   }
   if (!codes.length) {
     console.error('Usage: screen.mjs <code> [<code>...] [--date YYYY-MM-DD]                    # screening');
-    console.error('       screen.mjs <code> --style 1|2 --zone LO-HI [--pivot P] [--target T] [--equity E]   # trade plan');
+    console.error('       screen.mjs <code> --style 1|2|3 --zone LO-HI [--pivot P] [--revlow L] [--target T] [--equity E]   # trade plan');
     process.exit(1);
   }
 
@@ -287,7 +307,7 @@ function main() {
   try {
     if (style != null) {
       if (codes.length !== 1) { console.error('trade-plan mode takes exactly one code'); process.exit(1); }
-      if (style !== 1 && style !== 2) { console.error('--style must be 1 (pullback) or 2 (breakout)'); process.exit(1); }
+      if (style !== 1 && style !== 2 && style !== 3) { console.error('--style must be 1 (pullback), 2 (breakout), or 3 (reversal)'); process.exit(1); }
       const zoneRaw = flag('--zone');
       const m = zoneRaw && zoneRaw.match(/^([\d.]+)-([\d.]+)$/);
       if (!m) { console.error('--zone LO-HI is required for a trade plan (e.g. --zone 5940-6080)'); process.exit(1); }
@@ -295,6 +315,7 @@ function main() {
       const plan = tradePlan(db, codes[0], {
         style, zone,
         pivot: flag('--pivot') ? Number(flag('--pivot')) : null,
+        revlow: flag('--revlow') ? Number(flag('--revlow')) : null,
         target: flag('--target') ? Number(flag('--target')) : null,
         equity: flag('--equity') ? Number(flag('--equity')) : null,
         date: flag('--date'),

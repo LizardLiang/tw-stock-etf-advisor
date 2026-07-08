@@ -198,21 +198,28 @@ Computed rows are cached into the `indicators` table (idempotent upsert).
 ### Mode 2 — trade plan (Rule 6a-1 stop enforced by code)
 
 ```
-node --experimental-sqlite scripts/screen.mjs <code> --style 1|2 --zone LO-HI \
-     [--pivot P] [--target T] [--equity E] [--date YYYY-MM-DD]
+node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3 --zone LO-HI \
+     [--pivot P] [--revlow L] [--target T] [--equity E] [--date YYYY-MM-DD]
 ```
-- `--style 1` (pullback): `stop = zone_bottom − max(2×ATR14, bottom×5%)`
+- `--style 1` (pullback): `stop = zone_bottom − max(2×ATR14, bottom×5%)`. When the stock is
+  ATR-hot (screening `atrPct > 6` → `atrHot: true`), the notes flag Rule 6m: the pullback
+  path is regime-closed except the zone bottom — prefer Style-2/3.
 - `--style 2` (breakout): **requires `--pivot`** (base top / reclaimed high);
   `stop = min(pivot×0.99, bottom×0.95)`. Omitting `--pivot` is a **hard error** — the script
   refuses to fall back to 2×ATR (that silent regime swap was the 2026-07-03 bug).
+- `--style 3` (reversal-day inside a base, Rule 6b Style-3, added 2026-07-08): **requires
+  `--revlow`** (the reversal day's low); `stop = min(revlow×0.99, bottom×0.95)`. Same
+  hard-error policy. Pilot 50% only; close < revlow = out.
 - `--target`: measured-move / prior-high reward target; defaults to TP2 (+15% from zone mid)
 - `--equity`: account equity → `sizing.shares = floor(equity×1% / 1R)` (Rule 6e-2; apply the
   2% per-theme heat cap manually across correlated picks, Rule 6e-3)
 
-Output JSON: `style zone pivot atr14 stop stopPctBelowBottom tp1 tp2 rewardTarget oneR rr
-rrPass notes[] sizing? gate` — `rr` is measured mid→target per Rule 7d (never TP1); `notes[]`
-explains which stop branch fired (audit trail). R:R at the zone **bottom** is more favourable
-than at mid — a `rrPass: false` at mid with a pass at bottom = "只在買區下緣進" (e.g. 3711
-2026-07-03: mid 1.33 fail, bottom 1.49 pass → deep-pullback-only entry).
+Output JSON: `style zone pivot revlow atr14 atrHot stop stopPctBelowBottom tp1 tp2
+rewardTarget oneR rr rrPass notes[] sizing? gate` — `rr` is measured mid→target per Rule 7d
+(never TP1); `notes[]` explains which stop branch fired (audit trail). R:R at the zone
+**bottom** is more favourable than at mid — a `rrPass: false` at mid with a pass at bottom =
+"只在買區下緣進" (e.g. 3711 2026-07-03: mid 1.33 fail, bottom 1.49 pass → deep-pullback-only
+entry).
 
-Exit codes: missing OHLC / bad inputs / Style-2 without pivot → exit 1 with a message.
+Exit codes: missing OHLC / bad inputs / Style-2 without pivot / Style-3 without revlow →
+exit 1 with a message.
