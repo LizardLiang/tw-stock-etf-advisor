@@ -630,8 +630,9 @@ reporting an actual transaction.
 ## Action C — Check current holdings & suggest selling
 
 Triggered by: "檢查我的持股", "我現在該賣什麼", "review my holdings", "should I sell
-anything". This is the action that closes the loop: read what the user owns, get fresh
-data, and produce a per-holding sell recommendation.
+anything", or a direct move question about a held stock ("XX 為什麼跌/漲"). This is the
+action that closes the loop: read what the user owns, get fresh data, and produce a
+per-holding sell recommendation.
 
 1. **Read the ledger.** Get the `## 持有中` positions from the holdings ledger (read
    is lightweight — `obsidian read path="Eliot/Notes/2026/stock-holdings.md"`, or ask
@@ -646,7 +647,59 @@ data, and produce a per-holding sell recommendation.
      MA5/10/20, K9, D9, RSI6, RSI12, MACD. These are daily-close values (T-1 during
      market hours).
 
-3. **Evaluate technical signals per holding** (supplement the fundamental sell signals):
+3. **異動歸因 (move attribution) — trigger-gated, not run per-holding by default.**
+   This answers the review's real question: did the move break the setup, or is it
+   noise? Only run it when triggered; an untriggered holding's review-table row alone
+   is sufficient — do not spend a news search on every holding.
+
+   **Trigger gate** (any one fires it):
+   - **|當日漲跌| ≥ 3%**
+   - **Live price within 1% of, or through, the recorded 停損**
+   - **User asked directly** ("XX 為什麼跌/漲")
+
+   **Ordered checks — short-circuit on the first hit:**
+   1. **機械性 (除權息, Rule 6i).** If the move is wholly explained by 除息, stop
+      here — do NOT issue a 情緒・雜訊 verdict (a mechanical gap is not sentiment).
+      State "除息機械性缺口，非賣壓" and skip the remaining checks; no news search runs.
+   2. **大盤 (TAIEX 同日漲跌%).** If the whole market moved, produce ONE market-level
+      attribution and continue per-stock only for holdings whose move materially
+      exceeds the index (rough guide: beyond TAIEX% + 2pp). On a broad-market day this
+      keeps the output to one market read plus outliers, not N repeated stories.
+   3. **同主題 (same supply-chain peers, per 6e-1).** If peers moved together, it's
+      theme-wide, not stock-specific — say so, and narrow to what's different about
+      this name if anything is.
+   4. **個股新聞 (company news / 重大訊息).** Check for a company-specific cause —
+      recipes in `references/data-sources.md` §個股新聞查證. Best-effort: a failed
+      fetch yields 原因不明, never an invented cause.
+
+   **Mandatory verdict — exactly one** (for any holding that reaches check 2 or
+   beyond; the mechanical short-circuit in check 1 replaces it with the statement
+   above, not one of these four):
+   - **價值事件** — a citable dated source (headline/announcement + date) explains the
+     move. No source → cannot claim this verdict; fall back to 原因不明 or 情緒・雜訊.
+   - **情緒・雜訊** — price moved on sentiment/flow, not a fact change.
+   - **原因不明** — nothing material found. This is a **valid, non-penalized** output,
+     not a failure — flag it: "最危險的結論 — 可能有未公開資訊在跑，收緊注意力，停損
+     紀律不變".
+   - **混合** — part fact, part noise; the value component still needs its own
+     citable source.
+
+   **Output per triggered holding**: 2–4 timeline bullets (🔴 主因 / 🟡 次因 / ⚪ 背景)
+   + the verdict + the implication line:
+   - 價值事件 (or the value half of 混合) → "檢查 thesis 假設（事實變化）— 見 Rule 6o 複審"
+   - 情緒・雜訊 → "技術面規則照舊（drift: 僅價格變化）"
+   - 原因不明 → the danger flag above
+
+   **Precedence: no verdict suspends a stop.** A stop breach still routes through the
+   持股警報/Rule 6n path regardless of verdict — the verdict may inform the
+   re-underwrite reasoning in step 6, never defer the binary.
+
+   **Worked example**: a holding is −4.2% on a session where TAIEX is −0.5% (not a
+   market-wide day), no 除息 pending, theme peers flat, and one dated 重大訊息 (a
+   customer order cut, announced same morning) is found → verdict **價值事件** with
+   the citation → implication "檢查 thesis 假設（事實變化）— 見 Rule 6o 複審".
+
+4. **Evaluate technical signals per holding** (supplement the fundamental sell signals):
    | Signal | Condition | Interpretation |
    |---|---|---|
    | 均線空頭排列 | price < MA5 < MA10 | short-term downtrend, caution |
@@ -664,7 +717,7 @@ data, and produce a per-holding sell recommendation.
    the case for exit, while "near 停損 but KD golden cross" suggests watching one more
    session.
 
-4. **Evaluate all four fundamental sell signals per holding:**
+5. **Evaluate all four fundamental sell signals per holding:**
    | Signal | Condition | Suggestion |
    |---|---|---|
    | 停損觸價 | live ≤ recorded 停損 | **停損出場** — discipline, exit |
@@ -673,7 +726,7 @@ data, and produce a per-holding sell recommendation.
    | 權重明顯下降 | ETF weight well below the level recorded at buy | **留意** — losing index conviction |
    | 報酬率檢視 | report unrealized P/L % from cost regardless | context for the above |
 
-5. **Thesis health re-score (Rule 6o).** For each holding, read its thesis note
+6. **Thesis health re-score (Rule 6o).** For each holding, read its thesis note
    (`Eliot/Notes/<YYYY>/thesis/<code>-*.md`) and run the health re-score + drift
    check per `references/thesis-tracking.md` §2–4: mark every core assumption
    🟢/🟡/🔴/⚫, check every red line, compute
@@ -687,17 +740,18 @@ data, and produce a per-holding sell recommendation.
    context), and continue this review using the ledger's recorded 停損/停利 — do not
    block the review on the missing thesis.
 
-6. **Present a holdings review table**: code · name · cost · live price · 報酬率% ·
-   技術面摘要 · 每個訊號狀態 · **論點健康度** (score + mapped action, or "無 thesis 紀錄")
-   · 建議 (續抱 / 分批停利 / 停損出場 / 留意減碼). Lead with anything actionable
+7. **Present a holdings review table**: code · name · cost · live price · 報酬率% ·
+   技術面摘要 · 每個訊號狀態 · **異動歸因** (verdict icon/short verdict for triggered
+   holdings, "—" for untriggered) · **論點健康度** (score + mapped action, or "無 thesis
+   紀錄") · 建議 (續抱 / 分批停利 / 停損出場 / 留意減碼). Lead with anything actionable
    (停損/停利 hits, or a triggered thesis red line) at the top. Include a per-holding
    technical summary row (MA position, KD state, RSI level) so the user sees the
    full picture.
 
-7. **Offer to update the ledger via Eliot** if the user acts on a suggestion (record
+8. **Offer to update the ledger via Eliot** if the user acts on a suggestion (record
    the sell, update 持有中). Don't write unprompted.
 
-8. Close with the disclaimer line.
+9. Close with the disclaimer line.
 
 ---
 

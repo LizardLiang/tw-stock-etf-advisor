@@ -140,6 +140,10 @@ wholly explained by 除權息, classify it as mechanical price change — restor
 dividend before judging any assumption, and never let it trigger the stop red line
 on its own.
 
+**Move-attribution verdicts map directly to drift class**: an Action C 異動歸因
+價值事件 verdict classifies as 事實變化; a 情緒・雜訊 or mechanical verdict classifies
+as 價格變化 — reuse the verdict instead of re-deriving the drift class from scratch.
+
 Append the re-score to 複審紀錄 as a dated log line: date, health score + breakdown,
 per-assumption drift verdict (fact/price/wording), and the mapped action.
 

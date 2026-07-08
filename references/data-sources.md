@@ -283,6 +283,25 @@ Convert the found date to "X trading days away" and apply the ≤ 5-day blackout
 
 ---
 
+## 個股新聞查證 (Action C move attribution)
+
+For the company-news check in Action C's 異動歸因 (move attribution) step:
+
+- **Yahoo TW 個股新聞頁**: `https://tw.stock.yahoo.com/quote/<CODE>.TW/news` — read
+  `innerText` for recent headlines with dates; scan for anything that could move the
+  stock (訂單/財測/客戶/法說/併購 etc.).
+- **MOPS 重大訊息** (`https://mops.twse.com.tw`) is the **authoritative** source for
+  official company announcements (重大訊息公告) — prefer it over a headline when both
+  exist, since it carries the filing date directly.
+- **Fallback — WebSearch** is acceptable here (unlike ETF-holdings discovery):
+  attribution is best-effort, not a data-integrity requirement. Query
+  "<code> <name> 股價 下跌/上漲 原因 <date>".
+- **A failed fetch yields 原因不明, never an invented cause** — do not guess a
+  plausible-sounding story to fill the gap; an unsourced cause cannot support a
+  價值事件 verdict (see SKILL.md Rule 6i and the Action C move-attribution step).
+
+---
+
 ## Institutional flows — 三大法人買賣超 (Rule 6k, optional / Tier 2)
 
 Not yet a mandatory gate, but high-signal for Taiwan. 外資/投信/自營 net buy/sell:
