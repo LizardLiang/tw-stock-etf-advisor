@@ -67,7 +67,10 @@ that section. The non-negotiable rules below apply to all of them.
    **Audit trigger:** if the user asks some form of 「所以每次結論都是不要進場嗎？」/
    "is the conclusion always don't-enter?", treat it as a **mandatory audit signal**:
    re-check every candidate that failed R:R for stop-regime mismatch (6a-1) and
-   TP1-based R:R (7d) *before* defending the conclusion.
+   TP1-based R:R (7d) *before* defending the conclusion. Also check whether the
+   "wait" verdicts trace to an undeclared ATR-hot regime (6m — say so explicitly
+   instead of serial R:R fails) or to a watchlist trigger that fired outside its
+   validity band (6l — that is a trigger-authoring defect, own it as such).
 
    **6a. Stop loss is calculated from the buy zone, not the spot price — and its
    width formula depends on the entry style (see 6a-1).**
@@ -94,6 +97,7 @@ that section. The non-negotiable rules below apply to all of them.
    |---|---|---|
    | Style-1 pullback | buy zone bottom (support level) | `bottom − max(2×ATR14, bottom×5%)` |
    | Style-2 breakout | **breakout pivot** (base TOP / reclaimed prior high) | just under the pivot, honoring the 5% floor below entry — **NOT 2×ATR, NOT the base low** |
+   | Style-3 reversal (added 2026-07-08) | **reversal-day low** | just under the reversal-day low, honoring the 5% floor below entry — `screen.mjs --style 3 --revlow L` (hard-errors without it) |
 
    Why: a Style-2 entry is only valid while the breakout holds; if price falls back
    below the pivot the thesis is dead — waiting out a 2×ATR-wide stop down to the
@@ -106,8 +110,8 @@ that section. The non-negotiable rules below apply to all of them.
 
    **6b. Technical entry gate — must pass BEFORE recommending.**
    Every candidate stock must have its Histock technicals fetched and evaluated
-   *before* it enters the recommendation list. There are **two valid entry styles**;
-   a candidate qualifies if it passes *either*. Do not force every stock through the
+   *before* it enters the recommendation list. There are **three valid entry styles**;
+   a candidate qualifies if it passes *any*. Do not force every stock through the
    pullback gate — that biases the whole system toward permanent "wait" in trending /
    post-crash-recovery tapes (the paralysis bug, 2026-07).
 
@@ -136,15 +140,39 @@ that section. The non-negotiable rules below apply to all of them.
    (buying the breakout), not a lower pullback zone — say which base is breaking and
    where its floor (the stop reference) sits.
 
-   **6c. No-chase rule — applies to spikes, NOT to base breakouts.**
+   **Style 3 — Reversal-day entry inside a base (added 2026-07-08, user-approved).**
+   The gap between Style-1 and Style-2: a volume-confirmed reversal day *inside* an
+   established base, before the base top breaks. Without this style, the only legal
+   entries are the support edge and the breakout — a stock reversing mid-base fires
+   its watchlist trigger but is unbuyable (the 2379 2026-07-08 contradiction: trigger
+   met at 817, Style-1 R:R fails, Style-2 pivot not yet broken). Qualifies when ALL of:
+   - A **recognizable multi-week base** after a climax/correction (not a live
+     downtrend — lower lows still forming disqualify).
+   - **Reversal day 1 or 2 only**: KD golden cross + the close reclaims the last 3+
+     sessions' closes. Day 3+ is late — wait for the Style-2 breakout instead.
+   - **Volume ≥ 1× the 5-day average** (Rule 6j; ≥ 1.5× strengthens it).
+   - RSI6 ≤ 80.
+   - Stop just under the **reversal-day low** (per 6a-1, `screen.mjs --style 3
+     --revlow`), and R:R to the reward target ≥ 1:1.5.
+   Execution constraints (stricter than Style-1/2 because the base top has NOT yet
+   confirmed): **pilot 50% only, never full size**; add the rest only after the base
+   top breaks out (Style-2 rules take over from there); **close back below the
+   reversal-day low = out, no averaging, no second guess**. The entry window is the
+   reversal-day close +1% — beyond that the edge is gone (see 6l), wait for the
+   breakout.
+
+   **6c. No-chase rule — applies to spikes, NOT to base breakouts or base reversals.**
    If a stock is up > 3% on the session as an **isolated spike in open air** (no base
    breakout, or it is the 2nd+ consecutive extended up-day far above 20MA), mark it
    "勿追高，等下一交易日" and give the buy zone for a future pullback only. **But** a
    > 3% move that IS a volume-confirmed Style-2 breakout from a base is the *entry
    signal itself*, not a chase — do not exclude it under 6c; buy the breakout per 6b
-   Style 2. Distinguish the two explicitly in the writeup (spike vs base-breakout) so
-   the reason is auditable. Never set a pullback buy zone that includes today's price
-   when a stock is merely spiking without a base.
+   Style 2. Likewise a > 3% move that qualifies as a **Style-3 reversal day inside a
+   base** (volume-confirmed, day 1–2, reclaiming recent closes) is an entry signal,
+   not a chase — 6c does not block it. Distinguish the three explicitly in the writeup
+   (spike vs base-breakout vs base-reversal) so the reason is auditable. Never set a
+   pullback buy zone that includes today's price when a stock is merely spiking
+   without a base.
 
    **6d. Staged take-profit, not a single far target.**
    Replace the old "+15~20% single target" with staged exits:
@@ -254,6 +282,55 @@ that section. The non-negotiable rules below apply to all of them.
    - Report the volume-vs-average comparison alongside the technical screen so the
      user sees whether conviction backed the move.
 
+   **6l. Trigger validity band — a late-firing trigger is a rewrite, not a buy
+   (added 2026-07-08).** Every watchlist trigger condition MUST state a validity
+   band: the anchor level up to **+2%** (Style-2 breakout triggers: the pivot up to
+   +2~3%, per 6b; Style-3: reversal-day close +1%). If the condition first fires
+   with price already beyond the band, it is a **late fire**: do NOT chase, do NOT
+   report it as "進場條件已成立" — report "遲到觸發（超出有效帶 X%）" and rewrite
+   the trigger the same session (new anchor, or switch the path to
+   breakout/reversal). Why: on 2026-07-08, "站穩 776 上" fired at 817 (+5.3% above
+   its anchor) — met-but-unbuyable is a contradiction the trigger's author created,
+   and resolving it ad hoc looks like paralysis. The 觀察名單 entry format (step 9)
+   carries the band explicitly.
+
+   **6m. ATR-hot regime — declare the closed pullback path instead of serially
+   failing R:R (added 2026-07-08).** When `atrPct > 6%` (screen.mjs sets `atrHot:
+   true`), the Style-1 2×ATR stop makes essentially the entire pullback zone fail
+   R:R *by construction* — only the extreme zone bottom can pass. That is math, not
+   judgment; hiding it inside per-candidate R:R failures reads as "the system always
+   says wait". Instead, state the regime up front in the analysis: "ATR 未收斂
+   (X%)：回檔路徑關閉，僅突破 (Style-2) / 反轉日 (Style-3) 路徑有效；回檔僅買區
+   最下緣一點勉強可用". Re-open the pullback path when atrPct ≤ 6%. Do not present
+   Style-1 zones for an ATR-hot stock except that single bottom point, and label it
+   "只在買區下緣進".
+
+   **6n. Stop-execution accountability — an unexecuted stop is theater (added
+   2026-07-08).** In June 2026 a stop-breach exit was re-recommended for ~13
+   consecutive sessions while the position bled to −20%; the system repeated itself
+   daily with no escalation path. Rule: when a stop-breach exit recommendation goes
+   **unexecuted for 2+ sessions**, the analysis must force a binary decision and
+   accept no third option:
+   - **Execute** — record the exit via Action B, or
+   - **Re-underwrite** — the user consciously keeps the position: record in the
+     ledger "決定續抱 + 理由 + 新停損/退場計畫" (via Eliot), set the old stop marker
+     `--status invalidated` with the re-underwrite as `--outcome`, and assert the new
+     stop marker. The position is then judged against the NEW plan, not nagged about
+     the old one.
+   Until one of the two happens, every analysis leads with the 持股警報 pinned at
+   top, counting the sessions since breach ("破停損第 N 日"). A stop that neither
+   fires nor is consciously re-underwritten protects nothing.
+
+   **6o. Every position must carry a thesis (added 2026-07-08).** A prospective
+   thesis note is created at Action B buy time and re-scored with a numeric health
+   score at every Action C review — the reactive post-mortem habit becomes a
+   prospective discipline. Falsifiable core assumptions get a 🟢/🟡/🔴/⚫ status each
+   review; red lines (the ATR stop breach is always one) pre-commit the action that
+   Rule 6n enforces, so an exit-or-re-underwrite decision is a lookup, not a fresh
+   argument. Full template, health-score formula, action mapping, and drift
+   classification are in `references/thesis-tracking.md` — read it before Action B's
+   thesis step and Action C's re-score step.
+
 ---
 
 ## Action A — ETF common-holdings analysis & recommendation
@@ -351,11 +428,17 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
 
    **For held stocks**: compare live price against recorded 停損 and 停利. If any
    holding has breached its stop (live ≤ 停損), flag it as **持股警報** and present
-   it at the top of the output with full technical context.
+   it at the top of the output with full technical context, counting the sessions
+   since breach ("破停損第 N 日"). At N ≥ 2 apply Rule 6n: force the binary —
+   execute the exit (Action B) or re-underwrite in the ledger; do not just repeat
+   the recommendation a 3rd time.
 
    **For watchlist stocks**: compare current technicals against the prior analysis's
-   trigger conditions. Report each as:
-   - "✅ 進場條件已成立" — promote to recommendation candidates
+   trigger conditions **and each condition's validity band (Rule 6l)**. Report each as:
+   - "✅ 進場條件已成立" — fired inside its band → promote to recommendation candidates
+   - "⚠️ 遲到觸發" — condition met but price beyond the band → do NOT promote as a
+     buy at market; rewrite the trigger this session (6l), or qualify it under
+     Style-2/Style-3 on its own merits
    - "⏳ 條件未成立，持續觀察" — carry forward with updated values
    Present a separate **觀察名單追蹤** table showing prior condition → current
    status for each watchlist item.
@@ -373,20 +456,24 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
 7. **Entry/exit plan (mandatory for every recommendation).** Pick the stop regime
    per 6a-1 *before* computing R:R — style determines stop width, stop width
    determines 1R, 1R determines the verdict. **All numbers in this step come from
-   the script**: `node --experimental-sqlite scripts/screen.mjs <code> --style 1|2
-   --zone LO-HI [--pivot P] [--target T] [--equity E]` returns stop, TP1/TP2, 1R,
-   R:R verdict, and share sizing in one JSON. The model supplies the judgment
-   inputs (style, buy zone, breakout pivot, measured-move target) and MUST NOT
-   hand-compute stop/TP/R:R/shares — hand-math caused both paralysis bugs. The
-   script hard-errors on Style-2 without `--pivot` (no silent 2×ATR fallback).
+   the script**: `node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3
+   --zone LO-HI [--pivot P] [--revlow L] [--target T] [--equity E]` returns stop,
+   TP1/TP2, 1R, R:R verdict, and share sizing in one JSON. The model supplies the
+   judgment inputs (style, buy zone, breakout pivot / reversal-day low,
+   measured-move target) and MUST NOT hand-compute stop/TP/R:R/shares — hand-math
+   caused both paralysis bugs. The script hard-errors on Style-2 without `--pivot`
+   and Style-3 without `--revlow` (no silent 2×ATR fallback). If the stock is
+   ATR-hot (`atrHot: true`), lead with the Rule 6m regime statement.
    For each recommended stock:
 
    a. **Buy zone**: anchor to a real technical level. For a **Style-1 pullback** buy
       (6b) that's the 20MA / consolidation floor / key support. For a **Style-2
       breakout** buy that's the **breakout pivot up to +2~3% above it** (you buy the
-      breakout, not a lower pullback). State which style and which level, and why.
-      Never use "spot price minus X%". A Style-2 buy zone legitimately includes today's
-      price when a volume-confirmed base breakout is in progress (6c does not block it).
+      breakout, not a lower pullback). For a **Style-3 reversal** buy it's the
+      reversal-day close up to +1% above it. State which style and which level, and
+      why. Never use "spot price minus X%". A Style-2/Style-3 buy zone legitimately
+      includes today's price when a volume-confirmed base breakout / base reversal is
+      in progress (6c does not block either).
 
    b. **Stop loss** — per the 6a-1 regime table. For a **Style-1 pullback**:
       `buy_zone_bottom − max(2 × ATR14, buy_zone_bottom × 0.05)`, with **ATR14**
@@ -435,8 +522,10 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
    write without the user's go-ahead. The persisted note MUST include a
    `### 觀察名單` section listing each watchlist stock with its specific trigger
    condition — this is what step 3.5 reads in the next session. Format each entry
-   as: `- <code> <name>：<trigger condition>` (e.g.
-   `- 3037 欣興：等 KD 黃金交叉 + 站回 20MA(948)`).
+   as: `- <code> <name>：<trigger condition>（有效帶 <lo>-<hi>）` — the validity band
+   is mandatory per Rule 6l (anchor +2%; breakout pivot +2~3%; reversal close +1%).
+   E.g. `- 3037 欣興：等 KD 黃金交叉 + 站回 20MA(948)（有效帶 948-967）`. A condition
+   that fires with price beyond its band is a late fire → rewrite, not a buy.
 
 10. **Mirror to SQLite (structured layer, after the Eliot write).** Once the user approves
     the persist, also record the structured side so charts stay current (Rule 5; mechanics in
@@ -473,7 +562,19 @@ reporting an actual transaction.
 4. **Delegate the write to Eliot**: append one transaction row and update the
    `## 持有中` position summary (cost average, total cost). Log a one-liner to
    `[[stock]]`. The exact ledger format is in `references/obsidian-tracking.md`.
-5. **Mirror the trade to SQLite** so the chart shows the real fill (Rule 5):
+5. **Draft/update the thesis (Rule 6o)** and persist it via Eliot alongside the
+   ledger write — template and rules in `references/thesis-tracking.md`.
+   - **New position (no open thesis for this code)**: draft a new thesis note,
+     seeded from the latest analysis note when one covers this stock. If the stock
+     is **not** in any recent recommendation list (self-selected), draft the thesis
+     from the user's own stated reasoning instead and flag "自選標的，無事前分析" —
+     the full template (assumptions, red lines, stop/invalidation) is still required.
+   - **Add to an existing position**: update the SAME thesis file with the add (new
+     進場紀錄 row) — do not create a second thesis file for the same open position.
+   - **Sell that brings shares to zero**: close the thesis — append the outcome
+     section (exit price, R-multiple, which assumptions proved right/wrong) per
+     `references/thesis-tracking.md` §5. A later re-entry gets a NEW thesis file.
+6. **Mirror the trade to SQLite** so the chart shows the real fill (Rule 5):
    `add-marker.mjs <code> <date> <買=buy|賣=sell> <fill> "<備註>"`. On a buy, also assert the
    `stop`/`target` markers at the recorded levels. Then `fetch-history.mjs <code> --months 1`
    to top up price history. Best-effort; don't block on it.
@@ -526,15 +627,31 @@ data, and produce a per-holding sell recommendation.
    | 權重明顯下降 | ETF weight well below the level recorded at buy | **留意** — losing index conviction |
    | 報酬率檢視 | report unrealized P/L % from cost regardless | context for the above |
 
-5. **Present a holdings review table**: code · name · cost · live price · 報酬率% ·
-   技術面摘要 · 每個訊號狀態 · 建議 (續抱 / 分批停利 / 停損出場 / 留意減碼). Lead with
-   anything actionable (停損/停利 hits) at the top. Include a per-holding technical
-   summary row (MA position, KD state, RSI level) so the user sees the full picture.
+5. **Thesis health re-score (Rule 6o).** For each holding, read its thesis note
+   (`Eliot/Notes/<YYYY>/thesis/<code>-*.md`) and run the health re-score + drift
+   check per `references/thesis-tracking.md` §2–4: mark every core assumption
+   🟢/🟡/🔴/⚫, check every red line, compute
+   `health = 10 − 3×⚫ − 2×🔴 − 1×🟡 − 5×(red lines triggered)` **showing the count
+   breakdown**, classify each change as 事實/價格/措辭 drift with cited evidence, and
+   map the score to an action (§3: ≥9 hold/add · 7–8 hold · 4–6 reduce · ≤3 or any
+   red line → Rule 6n binary). A triggered red line forces the 6n binary regardless
+   of score — it does not get softened by an otherwise-healthy score. Append the
+   re-score to the thesis's 複審紀錄 log. **Holding with no thesis file**: flag
+   "無 thesis 紀錄", offer to draft one retroactively (seeded from the ledger/analysis
+   context), and continue this review using the ledger's recorded 停損/停利 — do not
+   block the review on the missing thesis.
 
-6. **Offer to update the ledger via Eliot** if the user acts on a suggestion (record
+6. **Present a holdings review table**: code · name · cost · live price · 報酬率% ·
+   技術面摘要 · 每個訊號狀態 · **論點健康度** (score + mapped action, or "無 thesis 紀錄")
+   · 建議 (續抱 / 分批停利 / 停損出場 / 留意減碼). Lead with anything actionable
+   (停損/停利 hits, or a triggered thesis red line) at the top. Include a per-holding
+   technical summary row (MA position, KD state, RSI level) so the user sees the
+   full picture.
+
+7. **Offer to update the ledger via Eliot** if the user acts on a suggestion (record
    the sell, update 持有中). Don't write unprompted.
 
-7. Close with the disclaimer line.
+8. Close with the disclaimer line.
 
 ---
 
@@ -561,7 +678,7 @@ TWSE 民國-date gotcha, and the exact CLI for every step.
 3. **Make sure the buy/sell/hold "why" markers exist.** The chart is only as good as its markers.
    - **First time / sparse DB**: run `scripts/seed-from-obsidian.mjs` once to import the holdings
      ledger (買/賣 + 停損/停利) and the latest analysis note's `### 觀察名單` into markers.
-   - **Otherwise**: markers accrue automatically from Action A step 10 and Action B step 5. Add
+   - **Otherwise**: markers accrue automatically from Action A step 10 and Action B step 6. Add
      ad-hoc ones with `scripts/add-marker.mjs <code> <date> <action> [price] [reason] [note_link]`
      (action ∈ buy|sell|hold|watch|stop|target). Keep the reason short — it is the chart tooltip;
      the full rationale lives in the Obsidian note (pass its `[[slug]]` as note_link).

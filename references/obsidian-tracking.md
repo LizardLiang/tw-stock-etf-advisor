@@ -93,3 +93,14 @@ up: ["[[stock]]"]
 Read `## 持有中` to get each position's code, name, shares, cost average, 停損, and
 停利目標 — those are the thresholds the sell-signal evaluation compares the live quote
 and current ETF weight against (see SKILL.md Action C).
+
+---
+
+## 3. Thesis notes (Rule 6o)
+
+Per-position thesis notes live at `Eliot/Notes/<YYYY>/thesis/<code>-<entrydate>.md` —
+a sibling of the analysis notes and ledger above, same vault, same Eliot delegation.
+Template, health-score formula, drift protocol, and lifecycle rules are owned by
+`references/thesis-tracking.md`, not repeated here. Writes go through Eliot like
+every other vault write in this skill; confirm the path against
+`Eliot/Profile.md > ## Vault Layout` the same way as the default paths listed above.
