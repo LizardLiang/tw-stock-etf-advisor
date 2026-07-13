@@ -36,7 +36,9 @@ Four actions, picked from how you ask:
 
 - Pulls the **full** constituent list from each fund company's official site (元大投信,
   富邦投信) — not Yahoo, which only shows the top 10 and can lag by weeks.
-- Computes the intersection and shows a side-by-side weight table.
+- Scores the **union** of constituents into soft tiers by index membership (核心 3+ /
+  確認 2 / 單一 1; top-10-only semi ETFs count as a confirmation bonus, not a tier) and
+  shows a side-by-side weight table — a wide pool with index conviction still visible.
 - Recommends stock(s) with reasoning, spread across the supply chain when you ask for
   several, plus an entry price / 停利 / 停損 plan from a **live** quote.
 

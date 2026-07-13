@@ -81,6 +81,33 @@ EVALEOF
 Also capture the `交易日期: YYYY/MM/DD` shown above the table — that is the data-as-of
 date to cite.
 
+### 0051 元大中型100 — 元大投信
+
+Same system and recipe as 0050 — mid-caps ranked 51–150, the pool's mid-cap tier.
+
+URL: `https://www.yuantaetfs.com/product/detail/0051/ratio`
+
+**Anchor gotcha: 0051 does NOT hold 台積電** — every other recipe here anchors its
+`innerText` slice on 台積電, but that returns `-1` on this page. Anchor on the
+holdings-table header (`持股明細` / `股票名稱`) instead and take a wide window,
+since the top holding rotates:
+
+```
+agent-browser open "https://www.yuantaetfs.com/product/detail/0051/ratio"
+agent-browser wait 4000
+agent-browser find text "展開" click      # expand to full ~100-row list
+agent-browser wait 1500
+agent-browser eval --stdin <<'EVALEOF'
+(() => {
+  const t = document.body.innerText;
+  const i = t.indexOf('持股明細');
+  return t.slice(Math.max(0, i), i + 6000);   // code\tname\tshares\tweight rows
+})()
+EVALEOF
+```
+
+Capture the `交易日期` line as the data-as-of date, same as 0050.
+
 ### 0052 富邦科技 — 富邦投信 ETF 投資網
 
 URL: `https://websys.fsit.com.tw/FubonETF/Fund/Assets.aspx?stkId=0052`
@@ -122,6 +149,28 @@ EVALEOF
 This is the **preferred** source for 00892 (official, full list). 富邦半導體 is a
 ~30-stock concentrated ETF — 台積電 ~23%, 聯發科 ~10%, plus 瑞昱/鴻勁/日月光/信驊/
 聯詠/旺矽/穎崴/力旺 etc., almost all of which are 0050/0052 共同成分.
+
+### 00733 富邦臺灣中小 — 富邦投信 ETF 投資網
+
+Same system as 0052/00892 — just change `stkId`. Small/mid-cap momentum ETF, the
+pool's small-cap tier. **Anchor gotcha: 00733 does NOT hold 台積電** — slicing
+around 台積電 fails here. Anchor on the stock-table header (`股票名稱` or the
+持股/成分 heading) and take a wide window; the top holding rotates frequently
+(momentum-rebalanced):
+
+```
+agent-browser open "https://websys.fsit.com.tw/FubonETF/Fund/Assets.aspx?stkId=00733"
+agent-browser wait 4000
+agent-browser eval --stdin <<'EVALEOF'
+(() => {
+  const t = document.body.innerText;
+  const i = t.indexOf('股票名稱');
+  return t.slice(Math.max(0, i), i + 6000);   // code\tname\tshares\tvalue\tweight%
+})()
+EVALEOF
+```
+
+Same 期貨-block caveat as 00892 — a small futures block may precede the stock rows.
 
 ### 00891 中信關鍵半導體 — use MoneyDJ (official site is bot-blocked)
 
@@ -176,11 +225,14 @@ Same **top-10-only caveat** as 00891. 00904 is even more 台積電-heavy (~41%),
 
 > **Note on these three semiconductor ETFs (00891/00892/00904):** all hold Taiwan
 > stocks and overlap heavily with 0050/0052 (台積電/聯發科/日月光/聯電/瑞昱/南亞科/
-> 華邦電/旺矽/創意/京元/聯詠/旺宏/世界先進…), so the common-holdings intersection is
+> 華邦電/旺矽/創意/京元/聯詠/旺宏/世界先進…), so their overlap signal is
 > meaningful. Do **NOT** confuse 00891 with **00911 兆豐洲際半導體**, which tracks the
 > ICE Semiconductor Index and holds **US** stocks (Micron/AMD/Nvidia/Broadcom…) — a
 > 國外成分股 ETF with ~zero overlap with Taiwan ETFs and not usable in this Taiwan-stock
-> picking/tracking workflow.
+> picking/tracking workflow. Because 00891/00904 are top-10-only sources, they are
+> **confirmation-only** in the membership-score table (SKILL.md Action A step 2):
+> presence adds a 半導體ETF確認 ✓, but they never count toward a stock's tier —
+> absence from a truncated list proves nothing.
 
 ### Other ETFs
 
@@ -190,12 +242,24 @@ tool ("<ETF代號> <issuer> 持股 官網") rather than Google-via-browser — G
 page throws a CAPTCHA to headless browsers. Common issuers: 元大投信
 (`yuantaetfs.com`), 富邦投信 (`fsit.com.tw` / `fubon.com`), 國泰投信, 群益投信.
 
-### Computing common holdings
+### Computing the membership-score table (soft tiers)
 
-Parse each ETF's `(code, name, weight)` rows. Intersect by **code** (names can vary,
-e.g. `國巨*` vs `國巨`). Present a side-by-side weight table sorted by weight, and note
-which big holdings are unique to one ETF (explains the overlap's character — a pure
-tech ETF won't share 0050's financials/traditionals).
+Parse each ETF's `(code, name, weight)` rows. Match by **code**, never by name
+(names can vary, e.g. `國巨*` vs `國巨`). Do **NOT** intersect — an intersection
+only shrinks as ETFs are added, and with top-10-only sources it caps the pool at
+~10 mega-caps. Instead (must mirror SKILL.md Action A step 2):
+
+- Pool = **union** of all fetched ETFs' constituents, keyed by code.
+- Tier = count of memberships in the **full-list ETFs only**
+  (0050/0052/00892/0051/00733): **核心** (3+) > **確認** (2) > **單一** (1,
+  flagged「單一指數，指數信念較低」).
+- **00891/00904 (top-10-only) never count toward the tier** — show them as a
+  bonus「半導體ETF確認 ✓」column. Presence is signal; absence from a truncated
+  list is not.
+- Present the table sorted by tier then combined weight, and note which big
+  holdings sit in only one ETF (explains the pool's character — a pure tech ETF
+  won't share 0050's financials/traditionals; 0051/00733 mid-caps are absent
+  from 0050).
 
 ---
 

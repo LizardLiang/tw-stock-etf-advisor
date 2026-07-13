@@ -431,7 +431,10 @@ that section. The non-negotiable rules below apply to all of them.
 ## Action A — ETF common-holdings analysis & recommendation
 
 Triggered by: "0050 跟 0052 共同持股", "推薦我買哪一檔", "哪一檔個股推薦購買". The user
-names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
+names two (or more) ETFs and wants overlapping holdings plus a reasoned pick. When
+the user does NOT name ETFs ("do today's analysis"), use the **default set**:
+0050, 0052, 00892, 0051, 00733 (full-list) + 00891, 00904 (top-10
+confirmation-only — see step 2).
 
 1. **Fetch full holdings for each ETF from the official 投信 site** (not Yahoo).
    See `references/data-sources.md` for the URL per ETF and the exact
@@ -440,10 +443,25 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
    >1% 依 3a 標註 (if Yahoo's weight for the same holding is ever consulted and
    disagrees with the 官網 by more than 1%, flag per Rule 3a and use the 官網 value).
 
-2. **Compute the intersection** by stock code. Build a table of common holdings with
-   each ETF's weight side by side, sorted by weight. Note which large holdings are
-   *not* shared (e.g. 0050's financials/traditionals that a pure-tech ETF lacks) — it
-   explains the overlap's character.
+2. **Compute the membership-score table (soft tiers) — NOT an intersection.** An
+   intersection can only shrink as ETFs are added, and with top-10-only sources in
+   the set it is mathematically capped at ~10 mega-caps — that was the old pool
+   bottleneck. Instead:
+   - Pool = the **union** of all fetched ETFs' constituents, keyed by stock code.
+   - Per stock, count memberships in the **full-list ETFs** (0050/0052/00892/0051/
+     00733). **Top-10-only ETFs (00891/00904) never count toward the tier** — show
+     their membership as a bonus column「半導體ETF確認 ✓」instead. Rationale
+     (asymmetry): presence in a top-10 list is a real signal; *absence* proves
+     nothing, since the list is truncated.
+   - Tiers by full-list membership count: **核心** (3+) > **確認** (2) > **單一**
+     (1, flagged「單一指數，指數信念較低」).
+   - Table columns: code · name · tier · each ETF's weight side by side ·
+     半導體ETF確認 · combined weight. Sort by tier, then combined weight.
+   - **No hard exclusion by tier** — step 4's shortlist may pick from any tier, but
+     must state the tier (a 單一-tier pick needs a stronger structural story).
+   Note which large holdings sit in only one ETF (e.g. 0050's financials/
+   traditionals that a pure-tech ETF lacks, or 0051/00733 mid-caps absent from
+   0050) — the tier column makes the pool's character auditable.
 
 3. **Market condition gate (Rule 6f).** Before shortlisting, fetch the TAIEX
    (加權指數 `^TWII`) quote and its 50-day/200-day MA from Histock or Yahoo. If
@@ -482,7 +500,12 @@ names two (or more) ETFs and wants overlapping holdings plus a reasoned pick.
       - "觀察名單進場條件檢查: 見 step 5"
 
 4. **Shortlist candidates (pre-technical screen).** Identify 4–6 candidate stocks
-   from the intersection based on weight, theme, and structural story. Same-theme
+   from the membership-score table (step 2) based on tier, weight, theme, and
+   structural story. Prefer 核心/確認 tiers by default; a 單一-tier candidate
+   (especially a 0051/00733-only mid/small cap) is allowed but must carry its tier
+   flag into the recommendation writeup, and Rule 6q's data-richness/liquidity
+   rating gates it as usual — a mid/small cap whose volume can't support a stop
+   gets C-rated, not recommended. Same-theme
    concentration is allowed (Rule 6e) — do NOT force cross-sector picks. But flag
    which candidates share the same supply chain so correlation-adjusted sizing
    applies later. **Additionally, include any watchlist stocks from step 3.5 whose
