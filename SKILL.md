@@ -273,6 +273,22 @@ that section. The non-negotiable rules below apply to all of them.
      un-stoppable loss. Fetch the next earnings date during Action A step 5 (recipe in
      `references/data-sources.md`).
 
+   **6h-1. 事件牆輸出規格 — 二選一指令，禁止中性語句 (added 2026-07-15,
+   user-audited).** Whenever a watchlist trigger's firing window overlaps a known
+   binary event — the stock's OWN earnings (the hard block above), or a **theme
+   core event** (e.g. 台積電法說 for the semi chain) — the watchlist entry MUST
+   end with an explicit binary directive:
+   - 「**建議：進**（條件、部位）」, or
+   - 「**建議：不進，等 <event> 後重評**」.
+   Phrases like「自覺接受風險」「規則合法但…」as the *conclusion* are forbidden —
+   they are legality judgments, not recommendations; the user cannot act on them
+   (2026-07-15 audit: the user could not tell whether the system said enter or
+   don't-enter). **Default: a trigger firing within the last trading session
+   before the event → 建議：不進**, re-evaluate after the event with the validity
+   band (6l) re-checked — a post-event gap beyond the band is a late fire →
+   rewrite, no chase. The user may explicitly override; record the override in
+   the note (same pattern as the 6n re-underwrite).
+
    **6i. Ex-dividend awareness — do not mistake the 除息 gap for a breakdown.**
    Taiwan's ex-dividend season is heavy (roughly June–August). On the ex-dividend
    (除權息) day a stock's price drops *mechanically* by the dividend amount. This:
