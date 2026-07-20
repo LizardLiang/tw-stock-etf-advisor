@@ -39,6 +39,11 @@ Four actions, picked from how you ask:
 - Scores the **union** of constituents into soft tiers by index membership (核心 3+ /
   確認 2 / 單一 1; top-10-only semi ETFs count as a confirmation bonus, not a tier) and
   shows a side-by-side weight table — a wide pool with index conviction still visible.
+- **Scans the whole market beyond ETFs** (`scripts/scan.mjs`): every 上市/上櫃 common
+  stock (~1,900) from official TWSE/TPEx JSON, behind a NT$100M/day liquidity floor,
+  ranked by three signals — 量價突擊 (≥3% on ≥1.5× own 5-day volume), 投信連買
+  (≥3 sessions), 營收 YoY (≥+30%) — so names no index committee picked can still
+  surface. Non-ETF finds carry a 掃描 tier flag and pass the same entry gates.
 - Recommends stock(s) with reasoning, spread across the supply chain when you ask for
   several, plus an entry price / 停利 / 停損 plan from a **live** quote.
 

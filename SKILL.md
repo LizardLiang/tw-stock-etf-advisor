@@ -166,8 +166,26 @@ that section. The non-negotiable rules below apply to all of them.
    met at 817, Style-1 R:R fails, Style-2 pivot not yet broken). Qualifies when ALL of:
    - A **recognizable multi-week base** after a climax/correction (not a live
      downtrend — lower lows still forming disqualify).
-   - **Reversal day 1 or 2 only**: KD golden cross + the close reclaims the last 3+
-     sessions' closes. Day 3+ is late — wait for the Style-2 breakout instead.
+   - **Reversal day 1 or 2 only**: KD golden cross + the close **reclaims the decline
+     segment's starting close** (revised 2026-07-20, user-approved — see below). Day 3+
+     is late — wait for the Style-2 breakout instead.
+     **The decline segment** = the unbroken run of down-closes immediately preceding the
+     reversal day; its **starting close** is the close just before that run began. The
+     reversal day must close **above** that level.
+     *Why this replaced the old fixed "last 3+ sessions' closes" window (2026-07-20):*
+     a fixed 3-session window is mis-calibrated at both ends — for a 1–2 day drop it
+     demands reclaiming pre-decline highs that have nothing to do with this move (too
+     strict), and for a 5-day slide it only asks for the last 3 (too loose). Anchoring
+     to the segment start scales with the actual decline: **stricter on long slides,
+     looser on quick shakeouts.** Note it does NOT loosen the 2-day case — the two
+     formulations coincide when the decline happens to be ~3 sessions long (1590 on
+     2026-07-20: both gave 1,365, close 1,335 → fail either way).
+     **Computed mechanically by `screen.mjs` — never by eye.** Read
+     `reversal.declineStart` / `reversal.reclaimed` from the screening JSON. This test
+     was the one Style-3 condition never mechanized, and hand-reading it caused a
+     mis-call on 2026-07-20 (a down-close was overlooked, so the segment was reported
+     as 1 day when it was 2). If `reversal` is absent from the JSON, do not assert the
+     test passed.
    - **Volume ≥ 1× the 5-day average** (Rule 6j; ≥ 1.5× strengthens it).
    - RSI6 ≤ 80.
    - Stop just under the **reversal-day low** (per 6a-1, `screen.mjs --style 3
@@ -450,7 +468,9 @@ Triggered by: "0050 跟 0052 共同持股", "推薦我買哪一檔", "哪一檔�
 names two (or more) ETFs and wants overlapping holdings plus a reasoned pick. When
 the user does NOT name ETFs ("do today's analysis"), use the **default set**:
 0050, 0052, 00892, 0051, 00733 (full-list) + 00891, 00904 (top-10
-confirmation-only — see step 2).
+confirmation-only — see step 2). The candidate pool has **two sources**: the ETF
+union (step 2, carries index conviction) and the whole-market scan (step 2b,
+catches what no index committee picked).
 
 1. **Fetch full holdings for each ETF from the official 投信 site** (not Yahoo).
    See `references/data-sources.md` for the URL per ETF and the exact
@@ -478,6 +498,30 @@ confirmation-only — see step 2).
    Note which large holdings sit in only one ETF (e.g. 0050's financials/
    traditionals that a pure-tech ETF lacks, or 0051/00733 mid-caps absent from
    0050) — the tier column makes the pool's character auditable.
+
+2b. **市場掃描 — the non-ETF discovery source (added 2026-07-17).** The ETF union
+   can only ever contain index constituents — names no index committee picked would
+   never surface, which is the pool's structural blind spot. Run
+   `node --experimental-sqlite scripts/scan.mjs` (CLI + output glossary in
+   `references/charting.md` §10; endpoints in `references/data-sources.md`
+   §市場掃描). It sweeps EVERY 上市/上櫃 common stock (~1,900) from official
+   TWSE/TPEx JSON — no browser — applies the hard **liquidity floor** (成交值 ≥
+   NT$1億/日; Rule 6q check 5 — a stop on an illiquid name is fiction, and this
+   floor is the honest replacement for the "professionals already filtered it"
+   safety that ETF membership provided), then returns three ranked signal lists:
+   - **momentum 量價突擊** — 漲 ≥3% 當日，量 ≥1.5× 自身 5 日均量
+   - **trustBuy 投信連買** — 投信連續買超 ≥3 個交易日
+   - **revenue 營收YoY** — 最新月營收 YoY ≥ +30%
+   plus **`multiSignal`** (hits on 2+ lists — read these first). Cross-reference
+   with the step-2 table: a scanned name that IS an ETF constituent keeps its ETF
+   tier (the scan corroborates it); a scanned name in NO fetched ETF gets tier
+   **掃描** — below 單一 — and carries the flag 「非ETF成分，無指數把關」 into any
+   shortlist or writeup. The scan widens *discovery only*: scanned candidates pass
+   through exactly the same step-5 gates (6b/6h/6i/6j) and Rule 6q rating as
+   everyone else — a thin small cap still gets C-rated, not recommended.
+   Best-effort: if Node/network fails, say so and proceed with the ETF pool alone;
+   never hand-fetch or hand-parse these endpoints (the field indices are the
+   script's job, same discipline as screen.mjs and Rule 1's no-derive).
 
 3. **Market condition gate (Rule 6f).** Before shortlisting, fetch the TAIEX
    (加權指數 `^TWII`) quote and its 50-day/200-day MA from Histock or Yahoo. If
@@ -516,12 +560,18 @@ confirmation-only — see step 2).
       - "觀察名單進場條件檢查: 見 step 5"
 
 4. **Shortlist candidates (pre-technical screen).** Identify 4–6 candidate stocks
-   from the membership-score table (step 2) based on tier, weight, theme, and
-   structural story. Prefer 核心/確認 tiers by default; a 單一-tier candidate
+   from the membership-score table (step 2) **and the market-scan lists (step
+   2b)** based on tier, weight, theme, signal strength, and structural story.
+   Prefer 核心/確認 tiers by default; scan `multiSignal` hits rank alongside them
+   (two independent signals is real evidence). A 單一-tier candidate
    (especially a 0051/00733-only mid/small cap) is allowed but must carry its tier
-   flag into the recommendation writeup, and Rule 6q's data-richness/liquidity
+   flag into the recommendation writeup; a **掃描-tier candidate needs a stronger
+   story still** — name which scan signal(s) surfaced it and why the setup is more
+   than a one-day pop — and Rule 6q's data-richness/liquidity
    rating gates it as usual — a mid/small cap whose volume can't support a stop
-   gets C-rated, not recommended. Same-theme
+   gets C-rated, not recommended (scan names are typically NOT in the local DB
+   yet: `fetch-history.mjs <code> --months 4` first, `--market tpex` for 上櫃,
+   per the step-5 fetch-before-downgrade order). Same-theme
    concentration is allowed (Rule 6e) — do NOT force cross-sector picks. But flag
    which candidates share the same supply chain so correlation-adjusted sizing
    applies later. **Additionally, include any watchlist stocks from step 3.5 whose
@@ -938,3 +988,8 @@ TWSE 民國-date gotcha, and the exact CLI for every step.
   (`--style/--zone/--pivot/--target/--equity`) computes the 6a-1 stop, TP1/TP2, R:R
   verdict, and 6e-2 sizing. The model never hand-computes these numbers. CLI + JSON
   glossary in `references/charting.md` §9.
+- `scripts/scan.mjs` is the **whole-market discovery engine** (Action A step 2b): syncs
+  every 上市/上櫃 common stock's daily quotes + 三大法人 flows into the local DB from
+  official TWSE/TPEx JSON (no browser), then emits the 量價突擊/投信連買/營收YoY signal
+  lists behind a liquidity floor. Never hand-fetch its endpoints or hand-parse the field
+  indices. CLI + JSON glossary in `references/charting.md` §10.

@@ -263,6 +263,40 @@ only shrinks as ETFs are added, and with top-10-only sources it caps the pool at
 
 ---
 
+## 市場掃描 — whole-market discovery endpoints (Action A step 2b, `scan.mjs`)
+
+The non-ETF pool source. All six endpoints are **plain JSON over HTTPS — no
+agent-browser** — and all are official TWSE/TPEx, so they satisfy Rule 1/3a as
+primaries directly. `scripts/scan.mjs` fetches, parses, caches, and ranks; **never
+hand-fetch these or hand-parse the field indices** (the layouts below are documented
+for maintaining the script, not for ad-hoc use — same discipline as screen.mjs).
+
+| Data | Endpoint | Notes |
+|---|---|---|
+| 上市 all-stock daily OHLCV | `twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=YYYYMMDD&type=ALLBUT0999&response=json` | multi-table response; use the table whose fields include 證券代號+收盤價. 漲跌 sign is a separate HTML field (`<p …>+</p>`, red=up) |
+| 上櫃 all-stock daily OHLCV | `tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&d=ROC/MM/DD&se=EW` | 漲跌 is a signed string; may be 除息 text (unparseable → chg null) |
+| 上市 per-stock 三大法人 | `twse.com.tw/rwd/zh/fund/T86?date=YYYYMMDD&selectType=ALLBUT0999&response=json` | 外資 = col4(外陸資)+col7(外資自營); 投信 = col10; 自營合計 = col11 |
+| 上櫃 per-stock 三大法人 | `tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php?l=zh-tw&se=EW&t=D&d=ROC/MM/DD` | 24 cols in 買進/賣出/買賣超 triples: 外資合計 = col10; 投信 = col13; 自營合計 = col22 |
+| 上市 monthly 營收 | `openapi.twse.com.tw/v1/opendata/t187ap05_L` | YoY/MoM % precomputed; 資料年月 is ROC (`11506` → 2026-06) |
+| 上櫃 monthly 營收 | `tpex.org.tw/openapi/v1/mopsfin_t187ap05_O` | same shape as the 上市 feed |
+
+Shared gotchas (all also handled by the script):
+- **民國 dates everywhere** — Gregorian = ROC + 1911, same trap as `fetch-history.mjs`.
+- **Common-stock filter**: keep only 4-digit codes not starting with `0`
+  (`/^[1-9]\d{3}$/`) — drops ETF/ETN (00xx), warrants/bonds (5–6 chars), TDR (91xxxx).
+- **Non-trading / unpublished days** return `stat != "OK"` or an empty table — the
+  script skips them silently (today's data publishes after the close, ~14:00+).
+- **Rate limits**: the rwd endpoints are the same infrastructure that throttles
+  `fetch-history.mjs`; the script sleeps 1.2 s between calls and caches by date, so
+  a daily run costs ~6 HTTP calls. Don't defeat the cache with `--backfill` sweeps.
+
+The three signals and their default thresholds (`--chg 3 --vol-ratio 1.5
+--trust-days 3 --rev-yoy 30 --min-value 100000000`), the 掃描 tier semantics, and
+the mandatory 「非ETF成分，無指數把關」 flag are specified in SKILL.md Action A
+step 2b; the CLI + output glossary is in `references/charting.md` §10.
+
+---
+
 ## Live quotes — Yahoo 股市
 
 URL pattern: `https://tw.stock.yahoo.com/quote/<CODE>.TW` (e.g. `2383.TW`).

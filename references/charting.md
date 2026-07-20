@@ -26,6 +26,7 @@ node --experimental-sqlite <skill>/scripts/<name>.mjs …
 7. Tokyo Night palette + marker glyph/colour map
 8. When to fetch / refresh (avoid hammering TWSE)
 9. Screening & trade-plan math (`screen.mjs`)
+10. Whole-market scan (`scan.mjs`)
 
 ---
 
@@ -55,6 +56,12 @@ node --experimental-sqlite scripts/db.mjs --init        # create file + schema
 - `markers(id, code, date, action, price, reason, note_link, created_at)` — UNIQUE(code,date,action,
   price) so re-asserting a marker is idempotent
 - `meta(key,value)`
+- `market_snapshot(code, date, market, name, close, chg_pct, volume, value, PK(code,date))` —
+  whole-market daily quotes (BOTH markets, ~1,900 rows/session), filled by `scan.mjs` so volume
+  ratios and streaks compute locally. Distinct from `ohlc`: snapshot is wide (every stock) and
+  shallow (close+volume+value only); `ohlc` is narrow (tracked stocks) and deep (full OHLC)
+- `inst_flows(code, date, foreign_net, trust_net, dealer_net, PK(code,date))` — per-stock 三大法人
+  daily nets in shares (positive = net buy), filled by `scan.mjs`
 
 ## 3. Fetching OHLC history
 
@@ -223,3 +230,42 @@ entry).
 
 Exit codes: missing OHLC / bad inputs / Style-2 without pivot / Style-3 without revlow →
 exit 1 with a message.
+
+## 10. Whole-market scan (`scan.mjs`)
+
+The 市場掃描 discovery engine (SKILL.md Action A step 2b) — sweeps every 上市/上櫃 common
+stock so the candidate pool isn't capped at ETF constituents. Endpoints and field layouts
+are in `references/data-sources.md` §市場掃描; never hand-fetch them.
+
+```
+node --experimental-sqlite scripts/scan.mjs                    # sync caches + scan
+node --experimental-sqlite scripts/scan.mjs --no-sync          # scan cached data only
+node --experimental-sqlite scripts/scan.mjs --sync-only        # refresh caches, no output
+node --experimental-sqlite scripts/scan.mjs --top 20 --min-value 50000000 --rev-yoy 50
+```
+
+Flags (defaults): `--top 15` rows per list · `--min-value 100000000` NT$ traded/day
+liquidity floor · `--chg 3` momentum min %gain · `--vol-ratio 1.5` momentum min volume vs
+own 5-session avg · `--trust-days 3` min consecutive 投信 net-buy sessions ·
+`--rev-yoy 30` min revenue YoY % · `--backfill 10` calendar days of history to ensure.
+
+Sync fills `market_snapshot` + `inst_flows` for dates not yet cached (first run ≈ 2 min
+for ~6 sessions of backfill; daily re-runs ≈ 6 HTTP calls / ~12 s). Monthly revenue is
+fetched fresh each run (YoY precomputed by TWSE/TPEx, nothing to cache).
+
+Output JSON:
+- `asOf` — `{snapshot, inst, revenueMonth}` data-as-of dates (cite them, Rule 3)
+- `universe` — `{total, afterLiquidityFloor, snapshotDepth}`; `snapshotDepth` < 6 means
+  volume ratios / streaks run on thin history (entries carry a `provisional` note)
+- `multiSignal` — codes hitting ≥2 lists, **read first**
+- `momentum[]` — `{code,name,market,close,chgPct,value,volRatio,provisional?}` sorted by
+  volRatio; `volRatio: null` + provisional until 3 prior snapshot days exist
+- `trustBuy[]` — `{…, streak, streakNet, todayNet, provisional?}` sorted by streak;
+  streak is capped by cached inst days (≤10), flagged when it hits the cap
+- `revenue[]` — `{…, revYoY, revMoM, revMonth}` sorted by YoY
+- `momentumTotal / trustBuyTotal / revenueTotal` — full counts before the `--top` cap
+
+Scan hits are *discovery*, not candidates: they still go through `fetch-history.mjs`
+(most scan names aren't in `ohlc` yet — `--market tpex` for 上櫃!), the `screen.mjs`
+gates, and the Rule 6q rating before any recommendation. Non-ETF names carry tier 掃描
+and the 「非ETF成分，無指數把關」 flag per step 2b.

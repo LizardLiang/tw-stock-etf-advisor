@@ -1,0 +1,5 @@
+# Windows `> nul` redirect artifacts (captured stderr from a botched Windows redirect,
+# not the NUL device itself) — recurred once already (scripts/nul, 2026-07-20).
+# Prefer `2>/dev/null` over `> nul` in docs/scripts to avoid recreating these.
+nul
+**/nul

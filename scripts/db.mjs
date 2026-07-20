@@ -97,6 +97,28 @@ export function initSchema(db) {
       UNIQUE (code, date, action, price)  -- re-seeding is idempotent
     );
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+    -- Whole-market daily quotes (scan.mjs). One row per stock per session, BOTH markets,
+    -- so the market scan can compute volume ratios / streaks without per-stock fetches.
+    CREATE TABLE IF NOT EXISTS market_snapshot (
+      code    TEXT NOT NULL,
+      date    TEXT NOT NULL,              -- ISO 'YYYY-MM-DD'
+      market  TEXT,                       -- 'twse' | 'tpex'
+      name    TEXT,
+      close   REAL,
+      chg_pct REAL,                       -- % change vs prior close (null when unparseable, e.g. 除息)
+      volume  INTEGER,                    -- shares
+      value   INTEGER,                    -- NTD traded (liquidity floor input, Rule 6q check 5)
+      PRIMARY KEY (code, date)
+    );
+    -- Per-stock 三大法人 daily nets (scan.mjs). Shares; positive = net buy.
+    CREATE TABLE IF NOT EXISTS inst_flows (
+      code        TEXT NOT NULL,
+      date        TEXT NOT NULL,          -- ISO 'YYYY-MM-DD'
+      foreign_net INTEGER,
+      trust_net   INTEGER,
+      dealer_net  INTEGER,
+      PRIMARY KEY (code, date)
+    );
   `);
   migrate(db);  // add post-mortem columns to markers if an older DB predates them
   db.prepare('INSERT OR IGNORE INTO meta(key,value) VALUES (?,?)')

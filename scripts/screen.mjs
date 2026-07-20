@@ -169,6 +169,34 @@ function screenCode(db, code, dateOpt) {
   if (dev20 != null && dev20 > 10) failures.push('>10% above 20MA');
   if (kdDeath) failures.push('KD死叉');
 
+  // Rule 6b Style-3 reclaim test (revised 2026-07-20): the reversal day must close ABOVE
+  // the decline segment's starting close. The segment is the unbroken run of down-closes
+  // immediately preceding this session; its start is the close just before that run.
+  // Replaces the old fixed "last 3+ sessions' closes" window, which was too strict on
+  // 1-2 day shakeouts and too loose on long slides. Mechanized because hand-reading it
+  // caused a mis-call on 2026-07-20 (an overlooked down-close halved the segment length).
+  let reversal = null;
+  if (idx >= 2) {
+    const isDown = i => i > 0 && rows[i].close < rows[i - 1].close;
+    const isReversalDay = !isDown(idx);            // an up/flat close is the only reversal candidate
+    // The run ends at today when today is still falling, otherwise at the bar before it.
+    let end = isDown(idx) ? idx : idx - 1;
+    let j = end;
+    while (j > 0 && isDown(j)) j--;                // j lands on the bar BEFORE the run's first down bar
+    const declineDays = end - j;
+    // Segment start = the close just before the first down bar of the run.
+    const declineStart = declineDays > 0 ? rows[j].close : null;
+    reversal = {
+      isReversalDay,
+      declineDays,
+      declineStart,
+      // reclaimed only means something on a reversal day that actually follows a decline
+      reclaimed: (isReversalDay && declineStart != null) ? last.close > declineStart : false,
+      // how far the reclaim still has to go, as % of the current close
+      reclaimGapPct: declineStart != null ? r2((declineStart - last.close) / last.close * 100) : null,
+    };
+  }
+
   // Histock spot-check hint: any reading within ±3 of a gate threshold
   const near = (v, t) => v != null && Math.abs(v - t) <= 3;
   const histockSpotCheck = near(rsi6, 70) || near(rsi6, 80) || near(k9, 80) || near(dev20, 10);
@@ -198,6 +226,7 @@ function screenCode(db, code, dateOpt) {
       volConfirmed: volRatio != null && volRatio > 1,
       volStrong: volRatio != null && volRatio >= 1.5,
     },
+    reversal,
     gate: {
       style1: { pass: failures.length === 0, failures },
       style2Partial: {
