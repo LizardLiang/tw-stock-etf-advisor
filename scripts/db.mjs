@@ -119,10 +119,267 @@ export function initSchema(db) {
       dealer_net  INTEGER,
       PRIMARY KEY (code, date)
     );
+    -- Structured mirror of the holdings ledger's "## 持有中" table (rule-math-mechanization).
+    -- Obsidian stays the narrative source; this is the machine-readable source for positions.mjs.
+    CREATE TABLE IF NOT EXISTS positions (
+      code TEXT PRIMARY KEY,
+      name TEXT,
+      shares REAL NOT NULL,
+      cost_avg REAL NOT NULL,
+      opened_at TEXT NOT NULL,          -- ISO date of first buy
+      stop REAL,                        -- NULL when none
+      stop_status TEXT NOT NULL          -- 'active' | 'reunderwritten' | 'void'
+        DEFAULT 'active',
+      stop_set_at TEXT,                  -- ISO date the CURRENT stop was set/last moved
+                                          -- (Rule 6d trails it to breakeven/5MA) — breach-check
+                                          -- only scans ohlc from here, never from opened_at,
+                                          -- or a trailed-up stop reads old pre-trail history as
+                                          -- a breach (2026-07-20 review finding)
+      target_lo REAL, target_hi REAL,
+      theme TEXT,                        -- correlation group for 6e-3 / 6e-4 (model-supplied)
+      thesis_note TEXT,                  -- [[slug]] of the thesis note
+      updated_at TEXT
+    );
+    -- Weekday non-trading days (Taiwan). Seeded with a best-effort built-in table
+    -- (source='builtin'); --sync-holidays refreshes/extends it from TWSE (source='twse').
+    -- R5: 6h's earnings-blackout count must never be silently wrong outside this table's
+    -- coverage — see holidays_builtin_from/to in meta and rules.mjs earnings' warning field.
+    CREATE TABLE IF NOT EXISTS holidays (
+      date TEXT PRIMARY KEY,             -- ISO, non-trading weekday only
+      name TEXT,
+      source TEXT                        -- 'builtin' | 'twse' | 'derived' (from ohlc gaps)
+    );
   `);
   migrate(db);  // add post-mortem columns to markers if an older DB predates them
   db.prepare('INSERT OR IGNORE INTO meta(key,value) VALUES (?,?)')
     .run('schema_version', SCHEMA_VERSION);
+  seedBuiltinHolidays(db);
+}
+
+// ---- holidays (Rule 6h / R5) ------------------------------------------------------------
+
+// Best-effort built-in Taiwan (TWSE/TPEx) weekday market holidays for 2026. Weekend dates are
+// deliberately omitted — the trading-day counter already treats Sat/Sun as non-trading; only
+// WEEKDAY closures need to be listed here. Dates are approximate where the official calendar
+// wasn't confirmable at authoring time (2026-07-20) — refresh with `--sync-holidays` (rules.mjs)
+// for authoritative dates; that is the ONLY network call anywhere in this delta, and it is
+// opt-in by design (R5).
+const BUILTIN_HOLIDAYS_2026 = [
+  ['2026-01-01', '元旦'],
+  ['2026-02-16', '春節（除夕）'],
+  ['2026-02-17', '春節（初一）'],
+  ['2026-02-18', '春節（初二）'],
+  ['2026-02-19', '春節（初三）'],
+  ['2026-02-20', '春節（初四，調整）'],
+  ['2026-02-27', '228和平紀念日調整（2/28 為週六）'],
+  ['2026-04-03', '兒童節／民族掃墓節（調整）'],
+  ['2026-05-01', '勞動節'],
+  ['2026-06-19', '端午節'],
+  ['2026-09-25', '中秋節'],
+  ['2026-10-09', '國慶日調整（10/10 為週六）'],
+];
+const BUILTIN_HOLIDAYS_COVERAGE = { from: '2026-01-01', to: '2026-12-31' };
+
+/** Idempotent: seeds the built-in holiday list and records its coverage range in `meta`. */
+function seedBuiltinHolidays(db) {
+  const ins = db.prepare(`INSERT INTO holidays(date,name,source) VALUES(?,?,'builtin')
+                           ON CONFLICT(date) DO NOTHING`);
+  for (const [date, name] of BUILTIN_HOLIDAYS_2026) ins.run(date, name);
+  db.prepare('INSERT OR IGNORE INTO meta(key,value) VALUES (?,?)')
+    .run('holidays_builtin_from', BUILTIN_HOLIDAYS_COVERAGE.from);
+  db.prepare('INSERT OR IGNORE INTO meta(key,value) VALUES (?,?)')
+    .run('holidays_builtin_to', BUILTIN_HOLIDAYS_COVERAGE.to);
+}
+
+/** Current holiday-table coverage range, as recorded in `meta` (extended by --sync-holidays). */
+export function getHolidayCoverage(db) {
+  const from = db.prepare('SELECT value FROM meta WHERE key=?').get('holidays_builtin_from');
+  const to = db.prepare('SELECT value FROM meta WHERE key=?').get('holidays_builtin_to');
+  return { from: from?.value ?? null, to: to?.value ?? null };
+}
+
+/** Extend the recorded coverage range to include [from, to] (used by --sync-holidays). */
+export function extendHolidayCoverage(db, from, to) {
+  const cur = getHolidayCoverage(db);
+  const newFrom = cur.from && cur.from < from ? cur.from : from;
+  const newTo = cur.to && cur.to > to ? cur.to : to;
+  db.prepare(`INSERT INTO meta(key,value) VALUES('holidays_builtin_from',?)
+              ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(newFrom);
+  db.prepare(`INSERT INTO meta(key,value) VALUES('holidays_builtin_to',?)
+              ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(newTo);
+}
+
+/** Set of ISO holiday dates in [from, to] inclusive, for the trading-day counter. */
+export function getHolidaySet(db, from, to) {
+  return new Set(
+    db.prepare('SELECT date FROM holidays WHERE date>=? AND date<=?').all(from, to).map(r => r.date)
+  );
+}
+
+// ---- verified coverage (2026-07-20 review fix — fail-loud, T1.1) -------------------------
+//
+// The static builtin table has now missed real holidays twice (2026-04-06/07-10 the first
+// round; 2026-02-27/10-09 this round). Taiwan make-up holidays and typhoon closures cannot be
+// enumerated in advance, so the table is downgraded to a best-effort ACCURACY AID only — it
+// must never by itself mark a date range "verified". Verified coverage is strictly:
+//   (a) the ohlc-derived span (authoritative, see getOhlcDateRange), UNION
+//   (b) years actually synced from TWSE with a NON-EMPTY parse (see markYearSynced) —
+//       an empty parse is a sync FAILURE, not evidence of a holiday-free year (T1.5).
+
+/** Years successfully synced from TWSE with a non-empty parse — see markYearSynced. */
+export function getSyncedYears(db) {
+  const row = db.prepare('SELECT value FROM meta WHERE key=?').get('holidays_synced_years');
+  return new Set(row?.value ? row.value.split(',').filter(Boolean) : []);
+}
+
+/** Record year `y` as verified (--sync-holidays MUST only call this after a non-empty parse). */
+export function markYearSynced(db, y) {
+  const years = getSyncedYears(db);
+  years.add(String(y));
+  const csv = [...years].sort().join(',');
+  db.prepare(`INSERT INTO meta(key,value) VALUES('holidays_synced_years',?)
+              ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(csv);
+}
+
+function nextIsoDayLocal(iso) {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Merge a list of {from,to} ISO-date intervals, combining overlapping/adjacent ones. Real
+ * interval union — NOT a min/max bounding box, which would silently paper over a genuine gap
+ * BETWEEN two verified spans (the exact bug Hermes flagged at rules.mjs:100-104). */
+export function mergeIntervals(intervals) {
+  const sorted = [...intervals]
+    .filter((iv) => iv.from && iv.to)
+    .sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+  const merged = [];
+  for (const iv of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && iv.from <= nextIsoDayLocal(last.to)) {
+      if (iv.to > last.to) last.to = iv.to;
+    } else {
+      merged.push({ from: iv.from, to: iv.to });
+    }
+  }
+  return merged;
+}
+
+/** VERIFIED coverage intervals (merged): the ohlc-derived span + every TWSE-synced year. The
+ * builtin table's nominal range is deliberately excluded — it is not a coverage guarantee. */
+export function getVerifiedIntervals(db) {
+  const intervals = [];
+  const ohlcRange = getOhlcDateRange(db);
+  if (ohlcRange.from && ohlcRange.to) intervals.push({ from: ohlcRange.from, to: ohlcRange.to });
+  for (const y of getSyncedYears(db)) intervals.push({ from: `${y}-01-01`, to: `${y}-12-31` });
+  return mergeIntervals(intervals);
+}
+
+/** True only if [from,to] is FULLY inside a single merged verified interval — a range that
+ * straddles a gap between two verified spans is NOT fully verified. */
+export function isRangeFullyVerified(mergedIntervals, from, to) {
+  return mergedIntervals.some((iv) => from >= iv.from && to <= iv.to);
+}
+
+// ---- ohlc-derived trading calendar (2026-07-20 fix — R5 gap) -----------------------------
+//
+// The `holidays` table (builtin/twse) is a static, hand-maintained list — it missed a real
+// make-up holiday (2026-04-06, Tomb Sweeping observance) and a typhoon closure (2026-07-10)
+// that a static table can never predict. Where we already hold TWSE's own settled OHLC
+// history locally, THAT is the authoritative trading calendar — a weekday with zero `ohlc`
+// rows across every tracked code, inside the DB's own covered span, is a genuine closure.
+// This is free, needs no network, and self-updates as `fetch-history.mjs` pulls more history.
+
+/** [min(date), max(date)] across ALL `ohlc` rows (any code) — the span we can derive from. */
+export function getOhlcDateRange(db) {
+  const row = db.prepare('SELECT min(date) minD, max(date) maxD FROM ohlc').get();
+  return { from: row?.minD ?? null, to: row?.maxD ?? null };
+}
+
+/** Distinct dates with at least one `ohlc` row (any code) in [from, to] — i.e. trading days. */
+export function getTradingDatesInRange(db, from, to) {
+  return new Set(
+    db.prepare('SELECT DISTINCT date FROM ohlc WHERE date>=? AND date<=?').all(from, to).map((r) => r.date)
+  );
+}
+
+/**
+ * Persist any weekday within `ohlc`'s current covered span that has NO rows for any code as
+ * a holiday with source='derived' (idempotent — ON CONFLICT DO NOTHING never downgrades an
+ * existing 'builtin'/'twse' entry's provenance). Self-updating: re-running after a fresh
+ * `fetch-history.mjs` pull picks up any newly-observed closures automatically.
+ */
+export function deriveHolidaysFromOhlc(db) {
+  const { from, to } = getOhlcDateRange(db);
+  if (!from || !to) return { from: null, to: null, added: 0 };
+  const trading = getTradingDatesInRange(db, from, to);
+  const ins = db.prepare(`INSERT INTO holidays(date,name,source) VALUES(?,?,'derived')
+                           ON CONFLICT(date) DO NOTHING`);
+  let added = 0;
+  let cursor = from;
+  while (cursor <= to) {
+    const day = new Date(`${cursor}T00:00:00`).getDay();
+    if (day !== 0 && day !== 6 && !trading.has(cursor)) {
+      const res = ins.run(cursor, 'derived closure (no ohlc rows across any code on this weekday)');
+      if (res.changes > 0) added++;
+    }
+    const d = new Date(`${cursor}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    cursor = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  return { from, to, added };
+}
+
+export function upsertHoliday(db, date, name, source = 'twse') {
+  db.prepare(`INSERT INTO holidays(date,name,source) VALUES(?,?,?)
+              ON CONFLICT(date) DO UPDATE SET name=COALESCE(excluded.name,name),
+                                              source=excluded.source`)
+    .run(date, name ?? null, source);
+}
+
+// ---- positions (Rule 6e-4 / 6n / Action C) -----------------------------------------------
+
+export function upsertPosition(db, p) {
+  // p: { code, name?, shares, cost_avg, opened_at, stop?, stop_status?, stop_set_at?,
+  //      target_lo?, target_hi?, theme?, thesis_note? }
+  // stop_set_at defaults to opened_at when omitted — the honest default when the caller
+  // (e.g. a ledger backfill) has no record of when the CURRENT stop was actually set.
+  db.prepare(`INSERT INTO positions(code,name,shares,cost_avg,opened_at,stop,stop_status,
+                stop_set_at,target_lo,target_hi,theme,thesis_note,updated_at)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+              ON CONFLICT(code) DO UPDATE SET
+                name=COALESCE(excluded.name,name),
+                shares=excluded.shares, cost_avg=excluded.cost_avg,
+                opened_at=excluded.opened_at,
+                stop=excluded.stop, stop_status=excluded.stop_status,
+                stop_set_at=excluded.stop_set_at,
+                target_lo=excluded.target_lo, target_hi=excluded.target_hi,
+                theme=COALESCE(excluded.theme,theme),
+                thesis_note=COALESCE(excluded.thesis_note,thesis_note),
+                updated_at=datetime('now')`)
+    .run(p.code, p.name ?? null, p.shares, p.cost_avg, p.opened_at,
+         p.stop ?? null, p.stop_status ?? 'active', p.stop_set_at ?? p.opened_at,
+         p.target_lo ?? null, p.target_hi ?? null,
+         p.theme ?? null, p.thesis_note ?? null);
+}
+
+export function getPosition(db, code) {
+  return db.prepare('SELECT * FROM positions WHERE code=?').get(code);
+}
+
+export function getAllPositions(db) {
+  return db.prepare('SELECT * FROM positions ORDER BY code').all();
+}
+
+export function getPositionsByTheme(db, theme) {
+  return db.prepare('SELECT * FROM positions WHERE theme=? ORDER BY code').all(theme);
+}
+
+/** Remove a position — used by seed-from-obsidian.mjs's ledger reconciliation (a sold-out
+ * position must not linger forever and get reported as a phantom holding, 2026-07-20 review). */
+export function deletePosition(db, code) {
+  db.prepare('DELETE FROM positions WHERE code=?').run(code);
 }
 
 // Forward-compatible column adds — so a chart can act as a review/post-mortem reference:
@@ -133,6 +390,14 @@ function migrate(db) {
   const cols = new Set(db.prepare('PRAGMA table_info(markers)').all().map(c => c.name));
   for (const [name, decl] of [['status', 'TEXT'], ['condition', 'TEXT'], ['outcome', 'TEXT']]) {
     if (!cols.has(name)) db.exec(`ALTER TABLE markers ADD COLUMN ${name} ${decl}`);
+  }
+  // 2026-07-20 review finding: positions created before stop_set_at existed need it backfilled
+  // so breach-check doesn't scan a trailed stop against pre-trail history (opened_at is the
+  // honest default — the same value a fresh insert would get when the caller doesn't pass one).
+  const pcols = new Set(db.prepare('PRAGMA table_info(positions)').all().map(c => c.name));
+  if (!pcols.has('stop_set_at')) {
+    db.exec(`ALTER TABLE positions ADD COLUMN stop_set_at TEXT`);
+    db.exec(`UPDATE positions SET stop_set_at = opened_at WHERE stop_set_at IS NULL`);
   }
 }
 

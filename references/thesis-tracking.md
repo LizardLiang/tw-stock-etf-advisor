@@ -84,6 +84,13 @@ health = 10 − 3×⚫ − 2×🔴 − 1×🟡 − 5×(triggered red lines)
 Always show the count breakdown in the output — e.g. "10 − 3×1(⚫) − 1×1(🟡) = 6" —
 never a silent total. This is what keeps the arithmetic auditable across sessions.
 
+**Computed mechanically by `rules.mjs thesis --json thesis.json`** (SKILL.md Rule 8) —
+`{assumptions:[{name,status}], redLines:[{name,triggered}]}` in, `{counts, health,
+breakdown, action, forcedBinary}` out. The model supplies each assumption's
+🟢/🟡/🔴/⚫ status and each red line's triggered/not (judgment inputs); the formula,
+breakdown string, and action mapping are the script's job — never hand-compute them.
+Quote `breakdown` verbatim into 複審紀錄.
+
 **Worked example.** Position with 5 assumptions (1 ⚫, 1 🟡, 3 🟢) and no red line
 triggered:
 
