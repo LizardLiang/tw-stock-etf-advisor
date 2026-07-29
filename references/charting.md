@@ -27,6 +27,8 @@ node --experimental-sqlite <skill>/scripts/<name>.mjs …
 8. When to fetch / refresh (avoid hammering TWSE)
 9. Screening & trade-plan math (`screen.mjs`)
 10. Whole-market scan (`scan.mjs`)
+11. Stateless rule math (`rules.mjs`)
+12. Portfolio-state rule math (`positions.mjs`)
 
 ---
 
@@ -62,6 +64,15 @@ node --experimental-sqlite scripts/db.mjs --init        # create file + schema
   shallow (close+volume+value only); `ohlc` is narrow (tracked stocks) and deep (full OHLC)
 - `inst_flows(code, date, foreign_net, trust_net, dealer_net, PK(code,date))` — per-stock 三大法人
   daily nets in shares (positive = net buy), filled by `scan.mjs`
+- `positions(code PK, name, shares, cost_avg, opened_at, stop, stop_status, target_lo, target_hi,
+  theme, thesis_note, updated_at)` — structured mirror of the holdings ledger's "## 持有中" table
+  (Rule 8), read/written by `positions.mjs` and backfilled by `seed-from-obsidian.mjs`.
+  `stop_status` ∈ `active` | `reunderwritten` | `void` — distinguishes a MISSING stop (`active`,
+  `stop=NULL`) from a CONSCIOUSLY DISCHARGED one (`reunderwritten`, Rule 6n) so breach-check never
+  confuses the two
+- `holidays(date PK, name, source)` — weekday non-trading days for `rules.mjs earnings` (Rule 6h);
+  `source` ∈ `builtin` (best-effort table, seeded on every `openDb()`) | `twse` (from
+  `--sync-holidays`, the only network call in the rule-math-mechanization delta)
 
 ## 3. Fetching OHLC history
 
@@ -70,11 +81,25 @@ node --experimental-sqlite scripts/fetch-history.mjs <code> --months 4          
 node --experimental-sqlite scripts/fetch-history.mjs <code> --months 3 --market tpex   # 上櫃
 node --experimental-sqlite scripts/fetch-history.mjs <code> --months 6 --force    # ignore cache
 ```
-- Source: TWSE `STOCK_DAY?response=json&date=YYYYMMDD&stockNo=CODE` (one call per month). OTC →
-  TPEx `st43_result.php`.
+- Source: TWSE `rwd/zh/afterTrading/STOCK_DAY?response=json&date=YYYYMMDD&stockNo=CODE` (one call
+  per month). OTC → TPEx `www/zh-tw/afterTrading/tradingStock?code=CODE&date=YYYY/MM/01&id=&response=json`.
 - **民國 gotcha**: TWSE dates are ROC years (`115/06/02`). Gregorian = ROC + 1911 → `2026-06-02`.
   `fetch-history.mjs` handles this; if you ever parse TWSE JSON by hand, remember `+1911`.
+- **TPEx mixes both calendars**: the `date=` *query parameter* is **Gregorian** (`2026/07/01`),
+  while the row dates *inside* the response are still ROC (`115/07/01`). Passing a ROC year in
+  the query silently yields an empty month.
+- **TPEx volume is 張 (lots), TWSE is 股 (shares)** — `parseTpexMonth` multiplies by 1000 so
+  `ohlc.volume` means the same thing in both markets. Rule 6j's 量比 and Rule 6q's liquidity
+  floor both read that column; skipping the conversion is a silent 1000× error, not a crash.
 - Numbers carry thousands commas and may be `--` on no-trade days; those rows are skipped.
+- **Endpoint rot is the recurring failure mode — it degrades silently, twice now.** 2026-07-28:
+  TWSE's legacy `exchangeReport/STOCK_DAY` served a cached month, dropping that day's bar with no
+  error. 2026-07-29: TPEx retired `web/stock/aftertrading/daily_trading_info/st43_result.php` and
+  served an HTML 404 there — `res.json()` threw, the per-month `catch` printed `(skipped)`, and
+  **every 上櫃 stock came back with 0 rows and got stuck at Rule 6q grade C for weeks**. Both
+  fetchers now assert a JSON content-type via `readJson()` and fail by name; `parseTpexMonth`
+  throws on a missing `tables[]` rather than returning an empty array. If you add a third source,
+  keep that contract. Symptom to watch for: `upserted 0 rows` with no visible error.
 - **Caching**: months already in `ohlc` are skipped (the newest month is always re-fetched to top up
   the latest sessions). The script throttles 1.2 s between month-calls and sends a `User-Agent` —
   TWSE rate-limits aggressive callers.
@@ -196,6 +221,12 @@ One JSON line per code, computed from the local `ohlc` table (top up with
 - `gate.style1`: `{ pass, failures[] }` — the four Rule 6b Style-1 checks
 - `gate.style2Partial`: the four mechanical Style-2 checks (`volConfirmed kdGolden macdRising
   rsi6LE80`); base-structure recognition and R:R stay with the model (pivot is a judgment input)
+- `continuation` — the **Rule 6b Style-3c 延遲確認 gate** (added 2026-07-22): did yesterday's
+  day-1/2 reversal candidate get confirmed TODAY? Fields: `upRun reversalDate reversalClose
+  reversalDayOfMove declineDays declineStart checks{windowOk kdGoldenYesterday
+  closeAboveReversal reclaimedNow volConfirmed kdGoldenToday rsi6LE80} qualified failures[]`.
+  Always confirms **yesterday only** (+1 session, D3); `null` when < 4 sessions of history.
+  Read `qualified`/`failures[]` — never re-derive the checks by eye.
 - `gate.histockSpotCheck`: `true` when a reading sits within ±3 of a gate threshold (RSI6 near
   70/80, K9 near 80, dev near 10%) → only then fetch Histock to cross-check. Otherwise skip the
   browser entirely; the script is the indicator source.
@@ -206,7 +237,7 @@ Computed rows are cached into the `indicators` table (idempotent upsert).
 
 ```
 node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3 --zone LO-HI \
-     [--pivot P] [--revlow L] [--target T] [--equity E] [--date YYYY-MM-DD]
+     [--pivot P] [--revlow L] [--confirm] [--vol-trial] [--target T] [--equity E] [--date YYYY-MM-DD]
 ```
 - `--style 1` (pullback): `stop = zone_bottom − max(2×ATR14, bottom×5%)`. When the stock is
   ATR-hot (screening `atrPct > 6` → `atrHot: true`), the notes flag Rule 6m: the pullback
@@ -216,20 +247,39 @@ node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3 --zone LO-HI 
   refuses to fall back to 2×ATR (that silent regime swap was the 2026-07-03 bug).
 - `--style 3` (reversal-day inside a base, Rule 6b Style-3, added 2026-07-08): **requires
   `--revlow`** (the reversal day's low); `stop = min(revlow×0.99, bottom×0.95)`. Same
-  hard-error policy. Pilot 50% only; close < revlow = out.
+  hard-error policy. Pilot 50% only; close < revlow = out. **Also hard-errors when
+  量 ≤ 5日均量 (Rule 6j, script-enforced since 2026-07-28)** — the error names the ratio and
+  points at `--vol-trial`.
+- `--style 3 --vol-trial` (Rule 6j-A2 試行, added 2026-07-28): plans a volume-failed Style-3 as a
+  **report-only paper track** — `volTrial: true`, `variant: '3-volTrial'`, `pilotPct: 25`.
+  Rationale: 6j's 1.0× threshold showed no discriminative power across 3 pre-registered samples
+  (2:1 against, 6,800+ signals). **Never a buy recommendation while the trial runs**; the notes
+  carry the disclaimer. Ignored with a note (not fatal) when volume already confirms. Scoped to
+  plain Style-3 — it does NOT unlock an unqualified 3c and does not touch Style-1/2.
+- `--style 3 --confirm` (3c 延遲確認, Rule 6b Style-3c, added 2026-07-22): no `--revlow`
+  (ignored with a note if passed) — the **confirmation-day low is read from the DB**;
+  `stop = min(confirmLow×0.99, bottom×0.95)`. **Hard-errors unless the screening
+  `continuation.qualified` is true** — the script, not the model, decides 3c
+  qualification (the error names the failed checks). Pilot 50% only; close below the
+  confirmation-day low = out. **試行觀察期**: until the user promotes 3c, a qualified day
+  is report-only (紙上追蹤) — see SKILL.md 6b Style-3c trial clause.
 - `--target`: measured-move / prior-high reward target; defaults to TP2 (+15% from zone mid)
 - `--equity`: account equity → `sizing.shares = floor(equity×1% / 1R)` (Rule 6e-2; apply the
-  2% per-theme heat cap manually across correlated picks, Rule 6e-3)
+  2% per-theme heat cap manually across correlated picks, Rule 6e-3). Also returns
+  `sizing.pilotShares = floor(shares × pilotPct/100)` — the Rule 6e-5 first entry (50%, or 25%
+  on the 6j-A2 trial path). **Never hand-halve a position — read `pilotShares`.**
 
-Output JSON: `style zone pivot revlow atr14 atrHot stop stopPctBelowBottom tp1 tp2
-rewardTarget oneR rr rrPass notes[] sizing? gate` — `rr` is measured mid→target per Rule 7d
+Output JSON: `style variant volTrial pilotPct volRatio zone pivot revlow confirmLow reversalDate
+atr14 atrHot stop stopPctBelowBottom tp1 tp2
+rewardTarget oneR rr rrPass notes[] sizing? gate` — `variant` is `'3c'` for a
+`--confirm` plan, `'3-volTrial'` for a 6j-A2 trial plan (else null); `rr` is measured mid→target per Rule 7d
 (never TP1); `notes[]` explains which stop branch fired (audit trail). R:R at the zone
 **bottom** is more favourable than at mid — a `rrPass: false` at mid with a pass at bottom =
 "只在買區下緣進" (e.g. 3711 2026-07-03: mid 1.33 fail, bottom 1.49 pass → deep-pullback-only
 entry).
 
-Exit codes: missing OHLC / bad inputs / Style-2 without pivot / Style-3 without revlow →
-exit 1 with a message.
+Exit codes: missing OHLC / bad inputs / Style-2 without pivot / Style-3 without revlow /
+Style-3 `--confirm` when `continuation.qualified` is false → exit 1 with a message.
 
 ## 10. Whole-market scan (`scan.mjs`)
 
@@ -269,3 +319,85 @@ Scan hits are *discovery*, not candidates: they still go through `fetch-history.
 (most scan names aren't in `ohlc` yet — `--market tpex` for 上櫃!), the `screen.mjs`
 gates, and the Rule 6q rating before any recommendation. Non-ETF names carry tier 掃描
 and the 「非ETF成分，無指數把關」 flag per step 2b.
+
+## 11. Stateless rule math (`rules.mjs`)
+
+The rule-math-mechanization delta's stateless engine (SKILL.md Rule 8): five inputs-in/
+verdict-out subcommands, no portfolio state. `earnings` is the only verb that opens the DB
+(for the `holidays` table); `band`/`heat`/`thesis`/`deviate` are pure functions.
+
+```
+node --experimental-sqlite scripts/rules.mjs earnings --event YYYY-MM-DD [--from YYYY-MM-DD] [--sync-holidays]
+node --experimental-sqlite scripts/rules.mjs band --style 1|2|3 --anchor A [--price P] [--breakout-pct N]
+node --experimental-sqlite scripts/rules.mjs heat --json legs.json --equity E [--cap 2]
+node --experimental-sqlite scripts/rules.mjs thesis --json thesis.json
+node --experimental-sqlite scripts/rules.mjs deviate --a V1 --b V2 --kind price|weight|indicator|quote-vs-close
+```
+
+- **`earnings`** (Rule 6h) — `--event`/`--from` are ISO dates (`--from` defaults to today).
+  `tradingDaysAway` = trading sessions strictly after `from`, up to and including `event`
+  (2026-07-20→2026-07-28 = 6). `blackout` at `tradingDaysAway <= 5`. `holidaysCrossed[]` lists
+  the weekday holidays skipped.
+  **`coverageVerified`** (added 2026-07-20) — `true` only when `[from, event]` lies wholly
+  inside **verified** coverage: the ohlc-derived trading-day span ∪ years actually synced
+  from TWSE with a non-empty parse. The static built-in holiday table **never** makes a
+  range verified — it is an accuracy aid only, having twice missed real closures
+  (2026-04-06/07-10; then the 2026-02-27/10-09 make-up Fridays), and typhoon closures are
+  unknowable in advance. When `false`, `warning` carries the verified intervals and the
+  remedy; refresh with `--sync-holidays` (the only network call in this feature).
+  **Consuming the flag is mandatory, not optional** — SKILL.md Rule 6h: `coverageVerified:
+  false` together with `tradingDaysAway <= 7` must be treated as a blackout unless a sync
+  verifies the range. A warning nobody is instructed to act on is decoration, which is the
+  exact defect class this feature exists to remove.
+- **`band`** (Rule 6l) — `--anchor` is the trigger level; band width by style: Style-1 generic
+  +2%, Style-2 breakout pivot `--breakout-pct` (default 3, i.e. +2~3%), Style-3 reversal close
+  +1%. With `--price`: `fired` (price ≥ anchor), `lateFire` (price > `bandHi`), `excessPct`
+  (how far beyond `bandHi`, not the raw anchor — that's what "超出有效帶 X%" means).
+- **`heat`** (Rule 6e-3) — `legs.json`: `[{code, entry, stop, shares?}]`; a leg without `shares`
+  defaults to the Rule 6e-2 1%-equity sizing. Returns per-leg `oneR`/`riskAmt`/`riskPct` and
+  `themeHeatPct`/`overCap`/`scaleFactor`; when `overCap`, read `legs[].sharesAtCap`, not `shares`.
+- **`thesis`** (Rule 6o) — `thesis.json`: `{assumptions:[{name,status}], redLines:[{name,triggered}]}`,
+  `status` ∈ `green`|`yellow`|`red`|`black`. `health = 10 − 3×black − 2×red − 1×yellow −
+  5×redLinesTriggered`; `breakdown` is the printable string (thesis-tracking.md §2 format,
+  only nonzero terms shown). Any `redLines[].triggered` forces `forcedBinary: true` regardless
+  of score — never softened by a healthy `health`.
+- **`deviate`** (Rule 3a) — `--kind price|weight`: `deltaPct` (relative to `--b`) `>=5%` →
+  `封鎖`, `>=1%` → `標註` (compared on the 1-decimal display value, so a reading that rounds
+  to exactly "1.0%" still flags). `--kind indicator`: absolute `deltaAbs > 3` → `標註` (0–100
+  scale). `--kind quote-vs-close`: `deltaPct > 10%` → `refetch` (the timing exemption — never
+  `封鎖`, a live-vs-T-1-close gap beyond 漲跌停 is a suspect fetch, not a conflict).
+
+Exit codes: bad/missing flags, unparseable `--json`, or `--event` before `--from` → exit 1
+with a message.
+
+## 12. Portfolio-state rule math (`positions.mjs`)
+
+Needs the `positions` table (backfilled by `seed-from-obsidian.mjs`, kept current by Action B's
+ledger writes). R4 runs through every verb: `stop_status` distinguishes a MISSING stop
+(`active`, `stop=NULL`) from a CONSCIOUSLY RE-UNDERWRITTEN one (`reunderwritten`, Rule 6n) — a
+re-underwritten (or `void`) position never reports a breach, only P&L.
+
+```
+node --experimental-sqlite scripts/positions.mjs theme-stop --theme "AI鏈" --price 3017=2135 [--price code=P ...]
+node --experimental-sqlite scripts/positions.mjs breach-check [--price code=P ...]
+node --experimental-sqlite scripts/positions.mjs review [--price code=P ...]
+```
+
+- **`theme-stop`** (Rule 6e-4) — all legs of `--theme` need a `--price`; the command errors
+  (naming the missing codes) rather than silently partial-computing the combined %. `tier` ∈
+  `null`|`-10`|`-15`|`-20` on combined `unrealizedPct`; `action` names the exact 6e-4 response;
+  `weakestLeg` is a lookup (worst unrealized %), not something the model re-derives.
+- **`breach-check`** (Rule 6n) — one row per position in `positions`. `firstBreachDate` is the
+  earliest `ohlc` close (from `opened_at` onward) at or below `stop`; an optional
+  `--price code=P` appends today's live price to the series when `ohlc` hasn't caught up yet.
+  `sessionsSinceBreach` counts rows from `firstBreachDate` onward; `forcedBinary: true` at
+  `sessionsSinceBreach >= 2` (the execute-or-re-underwrite decision itself stays judgment — this
+  only flags that the decision is due). Non-`active` `stop_status` always yields
+  `breached: false` with a `note` explaining why (never re-flagged as an unexecuted stop).
+- **`review`** (Action C step 5) — folds in `breach-check`. Per holding: `invested` (cost ×
+  shares), `live`/`unrealized`/`unrealizedPct` (needs `--price`), `stopHit` (from
+  `breach-check`), `targetHit` (`price >= target_lo`), `sessionsSinceBreach`. This is what
+  Action C step 5/7 reads instead of hand-computing cost × shares.
+
+Exit codes: unknown `--theme`, missing `--price` for a theme leg, or an unrecognized verb →
+exit 1 with a message.

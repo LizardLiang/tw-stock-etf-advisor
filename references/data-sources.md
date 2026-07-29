@@ -14,6 +14,23 @@ EVALEOF
 - `agent-browser close` when finished with a batch.
 - For watching it live, add `--headed` to the first `open`.
 
+### agent-browser operational gotchas (learned 2026-07-29, cost a whole analysis cycle)
+
+1. **Cold start can exceed 3 minutes.** The first `open` of a session launches the browser and
+   may take >180 s. **Set the tool timeout to ~420 s.** A timeout here looks exactly like a hang
+   — on 2026-07-29 it was misread as "daemon broken on Windows", every ETF source was declared
+   dead, and the analysis shipped with no membership table. The sources were fine.
+2. **Never `pkill` a slow `open`.** Killing it destroys the session; the next `eval` then returns
+   `len=0` against a blank page, which reads as "the site returned nothing" and compounds the
+   misdiagnosis. Wait it out, or `agent-browser close` cleanly.
+3. **Chain `open → wait → eval` in ONE shell invocation** when a session may not already be warm.
+   Separate tool calls can each land on a fresh browser.
+4. **Do NOT fall back to curl / `fetch()` / WebFetch for these sites.** Yuanta is a Nuxt SPA and
+   Fubon is ASP.NET postback — both return a 200 shell with no holdings, which is easy to
+   mistake for "the endpoint is down". Rule 1 says agent-browser; that is not a stylistic
+   preference, it is the difference between real data and a false negative. (Plain-JSON official
+   endpoints — the `scan.mjs` and `fetch-history.mjs` sources — are the documented exception.)
+
 ---
 
 ## 交叉驗證 (cross-source deviation, Rule 3a)
@@ -64,10 +81,22 @@ extraction is to read `document.body.innerText` and slice the block that starts 
 known top holding (台積電). The rows render as tab-separated text:
 `<code>\t<name>\t<shares>\t<weight>`.
 
+> **展開 gotcha (2026-07-29): it must be clicked by snapshot ref.** `find text "展開" click`
+> and an in-page `element.click()` both report success and **silently do nothing** — the list
+> stays at 5 rows, which looks like "the site only publishes the top 5". Take a snapshot, grab
+> the ref of the `generic "展開"` node, and click that:
+> ```
+> REF=$(agent-browser snapshot -i -c | grep '展開' | head -1 | sed -E 's/.*ref=(e[0-9]+).*/\1/')
+> agent-browser click "@$REF"
+> ```
+> Verify the expansion actually happened before trusting the result — count the rows (0050
+> should be ~50, 0051 ~100). Anchor on `基金權重-股票` rather than 台積電 so the same slice
+> works for both funds.
+
 ```
 agent-browser open "https://www.yuantaetfs.com/product/detail/0050/ratio"
 agent-browser wait 4000
-agent-browser find text "展開" click      # expand to full list
+agent-browser click "@eNN"                # 展開 — by snapshot ref, see gotcha above
 agent-browser wait 1500
 agent-browser eval --stdin <<'EVALEOF'
 (() => {
@@ -95,7 +124,7 @@ since the top holding rotates:
 ```
 agent-browser open "https://www.yuantaetfs.com/product/detail/0051/ratio"
 agent-browser wait 4000
-agent-browser find text "展開" click      # expand to full ~100-row list
+agent-browser click "@eNN"                # 展開 — by snapshot ref (same gotcha as 0050)
 agent-browser wait 1500
 agent-browser eval --stdin <<'EVALEOF'
 (() => {
@@ -233,6 +262,18 @@ Same **top-10-only caveat** as 00891. 00904 is even more 台積電-heavy (~41%),
 > **confirmation-only** in the membership-score table (SKILL.md Action A step 2):
 > presence adds a 半導體ETF確認 ✓, but they never count toward a stock's tier —
 > absence from a truncated list proves nothing.
+
+### Sources that look right but carry no holdings — don't burn a cycle on them
+
+- **TWSE ETFortune** (`https://www.twse.com.tw/zh/ETFortune/etfInfo/<CODE>`) — loads fine and is
+  the natural-looking official page, but it is **基金概況 only**: 發行公司/經理人/標的指數/費率,
+  **no constituent list** (verified 2026-07-29: 1,469 chars of innerText, no 台積電 anchor).
+  Useful for confirming an ETF's index and issuer, useless for step 2.
+- **TWSE ETF PCF** (`rwd/zh/ETF/etfPCF?stkNo=…`) — 404.
+- **Fubon `RWD/ETFBasicInfo.aspx` / `Trade/PCF.aspx`** — returns a site-maintenance notice.
+  The working Fubon path is `Fund/Assets.aspx?stkId=<id>` (above).
+
+Constituent lists come from the **issuer's own holdings page**, full stop.
 
 ### Other ETFs
 

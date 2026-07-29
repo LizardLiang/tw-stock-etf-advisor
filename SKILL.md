@@ -59,6 +59,10 @@ that section. The non-negotiable rules below apply to all of them.
     treat it as a real move.
     **"Verified"** means re-fetched from the declared primary with value + timestamp
     cited — never assert verification without a fetch.
+    **Computed mechanically by `rules.mjs deviate --a V1 --b V2 --kind price|weight|
+    indicator|quote-vs-close`** (Rule 8) — read `verdict`/`deltaPct`/`deltaAbs` from its
+    JSON; never hand-compare percentages. If the command errors or the field is absent,
+    do not assert a deviation verdict.
     Primary hierarchy, causes table, and a worked example are in
     `references/data-sources.md` §交叉驗證. (Distinct from Rule 6q: 3a governs
     conflicting data; 6q governs missing data.)
@@ -116,6 +120,7 @@ that section. The non-negotiable rules below apply to all of them.
    | Style-1 pullback | buy zone bottom (support level) | `bottom − max(2×ATR14, bottom×5%)` |
    | Style-2 breakout | **breakout pivot** (base TOP / reclaimed prior high) | just under the pivot, honoring the 5% floor below entry — **NOT 2×ATR, NOT the base low** |
    | Style-3 reversal (added 2026-07-08) | **reversal-day low** | just under the reversal-day low, honoring the 5% floor below entry — `screen.mjs --style 3 --revlow L` (hard-errors without it) |
+   | Style-3c delayed confirmation (added 2026-07-22) | **confirmation-day low** | `min(confirmLow×0.99, bottom×0.95)` — `screen.mjs --style 3 --confirm` (reads today's low from the DB; hard-errors when `continuation.qualified` is false). NOT the reversal-day low — after a strong day-2 it sits ~10%+ below entry, inflating 1R and recreating the paralysis (2454 2026-07-22: −12.3%) |
 
    Why: a Style-2 entry is only valid while the breakout holds; if price falls back
    below the pivot the thesis is dead — waiting out a 2×ATR-wide stop down to the
@@ -186,7 +191,10 @@ that section. The non-negotiable rules below apply to all of them.
      mis-call on 2026-07-20 (a down-close was overlooked, so the segment was reported
      as 1 day when it was 2). If `reversal` is absent from the JSON, do not assert the
      test passed.
-   - **Volume ≥ 1× the 5-day average** (Rule 6j; ≥ 1.5× strengthens it).
+   - **Volume ≥ 1× the 5-day average** (Rule 6j; ≥ 1.5× strengthens it). **Script-enforced
+     since 2026-07-28**: `screen.mjs --style 3` hard-errors when 量 ≤ 5日均量 (it was
+     prose-only before, so a volume-failed Style-3 could be planned by hand). A failing
+     candidate routes to the **6j-A2 試行** paper track (`--vol-trial`), not to a buy.
    - RSI6 ≤ 80.
    - Stop just under the **reversal-day low** (per 6a-1, `screen.mjs --style 3
      --revlow`), and R:R to the reward target ≥ 1:1.5.
@@ -197,6 +205,48 @@ that section. The non-negotiable rules below apply to all of them.
    reversal-day close +1% — beyond that the edge is gone (see 6l), wait for the
    breakout.
 
+   **Style 3c — 延遲確認 (delayed confirmation, added 2026-07-22, user-approved).**
+   The hole between Style-3 and Style-2: a reversal day fires without full confirmation
+   (typically volume, Rule 6j), and the confirmation arrives on the NEXT session — but
+   Style-3's window keys on TODAY being the reversal day, so the confirmed day-2 had no
+   legal entry path. The incident: 2454 on 2026-07-22 — 7/21's reversal day failed volume
+   (0.84×) AND reclaim (gap +1.9%); 7/22 delivered both (1.58×, close 3,850 > declineStart
+   3,740) plus KD golden and converged ATR, yet Style-3 said "window expired", Style-2 said
+   "no base", Style-1 said "not a pullback". 4th instance of the "mechanically correct gate
+   emits 等 in a regime it wasn't designed for" defect class. A session qualifies as a 3c
+   entry when ALL of (as-of the confirmation day — NOT "yesterday failed only volume";
+   2454's reversal day failed reclaim too, and both arrived late together):
+   - **Yesterday was a day-1/2 reversal candidate**: an up-close ending a ≥1-day decline
+     segment (up-run of 2–3 not-down closes as-of today), KD golden as-of yesterday.
+     **Window: reversal day +1 session ONLY** — a confirmation on move-session 3 is legal
+     iff session 2 was independently KD-golden (it is then the day-2 candidate being
+     confirmed); move-session 4+ never qualifies. Later = wait for the Style-2 breakout.
+   - Today: close > reversal-day close (holds the reversal).
+   - Today: close > decline-segment start (**reclaim as-of today** — the reclaim may
+     arrive with the confirmation, as 2454's did).
+   - Today: 量 > 5日均量 (Rule 6j's existing strict `>`; one threshold per rule).
+   - KD golden persists today; RSI6 ≤ 80.
+   A **fade day still qualifies**: 2454's 7/22 closed below its open (4,000→3,850) — the
+   checks key on close-vs-prev-close and close-vs-declineStart, never candle color.
+   **Read `continuation.{qualified,checks,failures[]}` from `screen.mjs` — never by eye;
+   if `continuation` is absent, do not assert the gate passed.** Stop per 6a-1: the
+   **confirmation-day low** (`--style 3 --confirm`; the script refuses to plan when
+   unqualified). Execution: same as Style-3 — **pilot 50% only**; **close back below the
+   confirmation-day low = out, no averaging** (the confirmation must hold — that IS the
+   thesis); validity band = confirmation-day close +1% (6l, band style 3). Note: 3c makes
+   the day-2 case *legal*, not automatically *good* — a +15%-off-the-low entry may still
+   fail R:R to the nearest structural target, and that is then an auditable R:R no.
+   **試行觀察期 (TRIAL — user-mandated 2026-07-22, not yet a buy path).** Until the user
+   explicitly promotes 3c, a `continuation.qualified` day is reported as
+   「**3c 成立（試行，不作買進建議）**」— never as 進場條件成立, never in the buy list.
+   For each qualified instance, run the `--style 3 --confirm` trade plan anyway and record
+   a **paper track** in the analysis note (entry = confirmation close, the plan's stop/TP,
+   then track the hypothetical outcome in later sessions). Promotion review after **2–3
+   qualified instances** with their paper outcomes — the user decides 轉正 or 作廢. Why the
+   trial: the rule was designed off ONE incident (2454 2026-07-22); the author's own
+   diagnostic (「若鏈上成形而系統仍買不了才確診」) was never evaluated before implementation
+   — the trial IS that observation, run with instruments instead of eyeballs.
+
    **6c. No-chase rule — applies to spikes, NOT to base breakouts or base reversals.**
    If a stock is up > 3% on the session as an **isolated spike in open air** (no base
    breakout, or it is the 2nd+ consecutive extended up-day far above 20MA), mark it
@@ -205,8 +255,11 @@ that section. The non-negotiable rules below apply to all of them.
    signal itself*, not a chase — do not exclude it under 6c; buy the breakout per 6b
    Style 2. Likewise a > 3% move that qualifies as a **Style-3 reversal day inside a
    base** (volume-confirmed, day 1–2, reclaiming recent closes) is an entry signal,
-   not a chase — 6c does not block it. Distinguish the three explicitly in the writeup
-   (spike vs base-breakout vs base-reversal) so the reason is auditable. Never set a
+   not a chase — 6c does not block it. And likewise a > 3% session that qualifies as a
+   **Style-3c 延遲確認 day** (`continuation.qualified` from screen.mjs) is not a chase
+   — though during the 3c trial period it is report-only, not a buy (see 6b 3c). Distinguish the cases explicitly in the writeup
+   (spike vs base-breakout vs base-reversal vs delayed-confirmation) so the reason is
+   auditable. Never set a
    pullback buy zone that includes today's price when a stock is merely spiking
    without a base.
 
@@ -236,6 +289,9 @@ that section. The non-negotiable rules below apply to all of them.
    For 2 same-chain positions: each risks ~1% max.
    Always state the per-theme heat in the recommendation so the user sees the
    combined risk.
+   **Computed mechanically by `rules.mjs heat --json legs.json --equity E [--cap 2]`**
+   (Rule 8) — read `themeHeatPct`/`overCap`/`legs[].sharesAtCap` from its JSON; never
+   apply the cap "manually" by eye. When `overCap`, size to `sharesAtCap`, not `shares`.
 
    **6e-4. Theme-level stop loss (fires before individual stops).**
    When total unrealized loss across all same-theme positions reaches:
@@ -245,6 +301,11 @@ that section. The non-negotiable rules below apply to all of them.
      the sector ETF reclaims its 50-day MA AND at least 2 weeks have passed
    This overrides individual stock stops — if the theme is broken, every leg is
    suspect even if one stock hasn't hit its own stop yet.
+   **Computed mechanically by `positions.mjs theme-stop --theme "<name>" --price
+   code=P [--price code=P ...]`** (Rule 8) — read `tier`/`action`/`weakestLeg` from
+   its JSON; never hand-sum invested/live across legs or eyeball which leg is
+   weakest. If the command errors (missing `--price` for a leg), do not assert a
+   tier.
 
    **6e-5. Entry protocol: pilot → add, never full size at once.**
    First entry: 50% of intended position. Add the remaining 50% only after price
@@ -290,6 +351,24 @@ that section. The non-negotiable rules below apply to all of them.
      pre-earnings window costs an occasional missed move; ignoring it risks an
      un-stoppable loss. Fetch the next earnings date during Action A step 5 (recipe in
      `references/data-sources.md`).
+   - **Computed mechanically by `rules.mjs earnings --event <date> --from <date>`**
+     (Rule 8) — the model supplies the earnings date (a judgment/discovery input); the
+     script counts trading days and reads back `tradingDaysAway`/`blackout`/
+     `coverageVerified`/`warning`. **Never count trading days by hand** — an off-by-one
+     here flips enter/don't-enter (2026-07-20: 1590 sat exactly on the 6-vs-5 line).
+   - **`coverageVerified: false` is an instruction, not decoration (added 2026-07-20).**
+     It means the range is NOT inside verified coverage — verified = the ohlc-derived
+     span ∪ years actually synced from TWSE. **The built-in holiday table never counts
+     as verified**, because it has now silently missed real closures twice (2026-04-06 /
+     07-10, then 2026-02-27 / 10-09 make-up Fridays), and typhoon closures cannot be
+     enumerated in advance at all. So when `coverageVerified: false`:
+     - `tradingDaysAway <= 7` → **treat as blackout** (「建議：不進」per 6h-1) unless you
+       first re-run with `--sync-holidays` and it comes back verified. Rationale: one or
+       two unknown closures inside the window is exactly the plausible error, and 6+2
+       covers it. A false blackout costs a missed entry; a false all-clear costs an
+       un-stoppable earnings gap — the asymmetry decides it.
+     - `tradingDaysAway > 7` → proceed, but state the count is provisional.
+     Report the `warning` text verbatim rather than paraphrasing it as "資料略舊".
 
    **6h-1. 事件牆輸出規格 — 二選一指令，禁止中性語句 (added 2026-07-15,
    user-audited).** Whenever a watchlist trigger's firing window overlaps a known
@@ -334,10 +413,45 @@ that section. The non-negotiable rules below apply to all of them.
    - Report the volume-vs-average comparison alongside the technical screen so the
      user sees whether conviction backed the move.
 
+   **6j-A2. 量能門檻試行觀察期 (TRIAL — added 2026-07-28, user-ruled A3→A2).**
+   Three pre-registered backtests found **no demonstrated discriminative power** in the
+   1.0× threshold, 2:1 against:
+
+   | 樣本 | 期間 | 量比 ≥1.0 | 量比 <1.0 | 指向 |
+   |---|---|---|---|---|
+   | IS 132 檔 | 2023-07～2026-07 | +0.243R | +0.085R | 支持 6j |
+   | OOS 300 檔 | 2023-07～2026-07 | +0.126R | **+0.197R** | 反對 |
+   | Tiebreak 432 檔 | 2018-01～2023-07 | +0.281R | **+0.334R** | 反對 |
+
+   6,800+ signals over 8.5 years. **Read this correctly: "6j 沒用", NOT "量縮較好"** —
+   the tiebreak margin is only −0.053R. 6j removes **38.3% of Style-3 candidates
+   (≈13/year on a 14-name chain)** — by far the biggest gate (22× Rule 6h's 2.5%).
+
+   Rule: a Style-3 candidate that passes everything **except** 6j's volume leg is
+   **TRACKED, not vetoed** — run `screen.mjs --style 3 --revlow L --vol-trial` and record
+   a **paper track** in the analysis note (entry = that close, the plan's stop/TP, then
+   track the outcome in later sessions). Report it as
+   「**6j-A2 成立（試行，不作買進建議）**」— never as 進場條件成立, never in the buy list.
+   Pilot on promotion would be **25%** (half the Style-3 50%), read from the plan's
+   `pilotPct`/`sizing.pilotShares` — never hand-halved.
+   **Promotion review after 3–5 tracked instances**; the user decides 轉正 or 作廢.
+   **Scope: plain Style-3 only.** Style-1/Style-2 are untouched (their volume handling is
+   unchanged), and Style-3c is excluded — it is already its own trial, and `--vol-trial`
+   must never unlock an unqualified `continuation`.
+   **Timing caveat (state it when reporting a trial instance)**: the 2026-06-03～07-27
+   period check showed 6 of the 7 volume-confirmed Style-3 signals were −1R in that
+   regime. Loosening throughput in a bad tape is exactly when it hurts — the trial exists
+   so this is measured, not assumed.
+   ⚠️ Descriptive-only observation from the tiebreak, **NOT actionable without a fresh
+   pre-registration**: the `≥1.5×` bucket had the *lowest* avgR (+0.224 vs +0.348 for
+   1.0–1.5×), contradicting 6b Style-3's「≥ 1.5× strengthens it」. Do **not** change 6b on
+   this basis. Harness + pre-registrations: `personal/stocks/experiments/`.
+
    **6l. Trigger validity band — a late-firing trigger is a rewrite, not a buy
    (added 2026-07-08).** Every watchlist trigger condition MUST state a validity
    band: the anchor level up to **+2%** (Style-2 breakout triggers: the pivot up to
-   +2~3%, per 6b; Style-3: reversal-day close +1%). If the condition first fires
+   +2~3%, per 6b; Style-3: reversal-day close +1%; Style-3c: confirmation-day close
+   +1%, same band-style-3 width). If the condition first fires
    with price already beyond the band, it is a **late fire**: do NOT chase, do NOT
    report it as "進場條件已成立" — report "遲到觸發（超出有效帶 X%）" and rewrite
    the trigger the same session (new anchor, or switch the path to
@@ -345,6 +459,11 @@ that section. The non-negotiable rules below apply to all of them.
    its anchor) — met-but-unbuyable is a contradiction the trigger's author created,
    and resolving it ad hoc looks like paralysis. The 觀察名單 entry format (step 9)
    carries the band explicitly.
+   **Computed mechanically by `rules.mjs band --style 1|2|3 --anchor A [--price P]
+   [--breakout-pct N]`** (Rule 8) — read `bandLo`/`bandHi`/`fired`/`lateFire`/
+   `excessPct` from its JSON; never hand-write the ±% band or eyeball a late fire. If
+   `lateFire` is absent (no `--price` given), do not assert whether the trigger fired
+   in-band or late.
 
    **6m. ATR-hot regime — declare the closed pullback path instead of serially
    failing R:R (added 2026-07-08).** When `atrPct > 6%` (screen.mjs sets `atrHot:
@@ -372,6 +491,13 @@ that section. The non-negotiable rules below apply to all of them.
    Until one of the two happens, every analysis leads with the 持股警報 pinned at
    top, counting the sessions since breach ("破停損第 N 日"). A stop that neither
    fires nor is consciously re-underwritten protects nothing.
+   **Computed mechanically by `positions.mjs breach-check [--price code=P ...]`**
+   (Rule 8) — read `breached`/`sessionsSinceBreach`/`forcedBinary`/`note` per
+   position; never count sessions since breach by hand. A `stop_status` of
+   `reunderwritten` or `void` always reports `breached: false` — that is the
+   re-underwrite record, not a bug; do not re-flag it as an unexecuted stop. The
+   execute-or-re-underwrite CHOICE itself stays user/model judgment — the script
+   only flags WHEN the binary is due (`forcedBinary`), never which branch to take.
 
    **6o. Every position must carry a thesis (added 2026-07-08).** A prospective
    thesis note is created at Action B buy time and re-scored with a numeric health
@@ -382,6 +508,11 @@ that section. The non-negotiable rules below apply to all of them.
    argument. Full template, health-score formula, action mapping, and drift
    classification are in `references/thesis-tracking.md` — read it before Action B's
    thesis step and Action C's re-score step.
+   **Computed mechanically by `rules.mjs thesis --json thesis.json`** (Rule 8) — the
+   model supplies each assumption's 🟢/🟡/🔴/⚫ status and each red line's
+   triggered/not (judgment inputs); the script returns `health`/`breakdown`/
+   `action`/`forcedBinary`. Never hand-compute the formula or hand-write the
+   breakdown string — quote them verbatim into the thesis note's 複審紀錄.
 
    **6p. 鏡子測試 — 說不完整就不進場 (added 2026-07-08).** Rules 6b–6o are all veto
    gates — they can only say no. This is the affirmative half: before any stock is
@@ -459,6 +590,58 @@ that section. The non-negotiable rules below apply to all of them.
    Why: forcing a signal out of missing data is how thin small caps turn into
    unbounded risk — an unverifiable earnings date defeats 6h, an uncomputable ATR
    defeats 6a, and thin volume defeats the stop itself.
+   **Computed mechanically by `screen.mjs <code> [--quote-ok] [--events-known]`**
+   (Rule 8) — read `dataGrade.{grade,checks,gaps,upgradePath}` from its JSON; never
+   hand-rate the five checks. `quoteAvailable`/`eventDatesKnown` are judgment flags
+   (default unknown → `partial` when the flag is omitted); the other three checks
+   are derived from the local DB. If `dataGrade` is absent, do not assert a grade.
+
+7. **Rule 8 — 規則計算歸屬表 (added 2026-07-20, rule-math-mechanization).** Every
+   numeric rule in this skill is owned by EXACTLY ONE of: a script + JSON field (read
+   only, never hand-derive), or "model judgment" (a genuinely human input — pattern
+   recognition, event-date discovery, theme grouping, assumption authoring). A rule
+   absent from this table is a bug in the table, not a signal that it's unmechanized —
+   file it. This table exists because the Style-3 reclaim test (2026-07-20) slipped
+   through hand-computation for 12 days with no inventory to catch it as unowned.
+
+   | Rule | What's computed | Owner | Model may only |
+   |---|---|---|---|
+   | 6a ATR14 stop width | 14-TR average, stop distance | `screen.mjs` → `atr14`/`atrPct`/`atrProvisional` (screen); `stop` (trade-plan) | read |
+   | 6a-1 stop-width regime (style → formula) | which formula + the stop price | `screen.mjs` trade-plan → `stop`/`stopPctBelowBottom`/`notes[]` | read (hard-errors on Style-2/3 without `--pivot`/`--revlow`, and on `--style 3 --confirm` when `continuation.qualified` is false) |
+   | 6b Style-1 gate | 4 overbought/momentum checks | `screen.mjs` → `gate.style1.{pass,failures[]}` | read |
+   | 6b Style-2 partial gate | volume/KD/MACD/RSI mechanical checks | `screen.mjs` → `gate.style2Partial.{...}` | read (base recognition + pivot level stay judgment) |
+   | 6b Style-3 reclaim test | decline segment + reclaim | `screen.mjs` → `reversal.{declineDays,declineStart,reclaimed,reclaimGapPct}` | read (absent → do not assert it passed) |
+   | 6b Style-3c delayed-confirmation gate **(NEW)** | yesterday's day-1/2 candidacy + the 7 confirmation-day checks | `screen.mjs` → `continuation.{qualified,checks,failures[]}` | read (absent → do not assert it passed) |
+   | 6d staged take-profit | TP1/TP2 prices | `screen.mjs` trade-plan → `tp1`/`tp2` | read |
+   | step 7 / "Rule 7" R:R (to reward target, not TP1) | 1R, R:R, pass/fail | `screen.mjs` trade-plan → `oneR`/`rr`/`rrPass` | read |
+   | 6e-2 per-position 1% sizing | share count from stop distance | `screen.mjs` trade-plan → `sizing.shares`/`sizing.riskDollars` | read |
+   | 6e-3 per-theme heat cap **(NEW)** | combined theme risk %, scaled sizing | `rules.mjs heat` → `themeHeatPct`/`overCap`/`legs[].sharesAtCap` | read |
+   | 6e-4 theme-level stop **(NEW)** | combined unrealized %, tier, weakest leg | `positions.mjs theme-stop` → `unrealizedPct`/`tier`/`action`/`weakestLeg` | read |
+   | 6h earnings blackout **(NEW)** | trading-day count to event | `rules.mjs earnings` → `tradingDaysAway`/`blackout`/`coverageVerified`/`warning?` | read (supplies `--event`/`--from`); **`coverageVerified: false` + `tradingDaysAway <= 7` ⇒ treat as blackout** unless `--sync-holidays` verifies — see 6h |
+   | 6j volume confirmation | volume vs 5-day average | `screen.mjs` → `volRatio`/`signals.volConfirmed`/`signals.volStrong`; Style-3 trade plans hard-error when unconfirmed | read |
+   | 6j-A2 量能試行 **(NEW)** | trial flag + 25% pilot split | `screen.mjs --style 3 --vol-trial` → `volTrial`/`variant`/`pilotPct`/`sizing.pilotShares` | read (report-only during the trial; never a buy) |
+   | 6e-5 pilot fraction **(NEW)** | pilot % and pilot share count | `screen.mjs` trade-plan → `pilotPct`/`sizing.pilotShares`/`sizing.pilotRiskDollars` | read (never hand-halve a position) |
+   | 6l trigger validity band **(NEW)** | band edges, late-fire excess % | `rules.mjs band` → `bandLo`/`bandHi`/`fired`/`lateFire`/`excessPct` | read |
+   | 6m ATR-hot regime | ATR% vs 6% threshold | `screen.mjs` → `atrHot` | read |
+   | 6n breach session counter **(NEW)** | sessions since breach, forced-binary flag | `positions.mjs breach-check` → `breached`/`sessionsSinceBreach`/`forcedBinary` | read (execute-vs-re-underwrite choice stays judgment) |
+   | 6o thesis health score **(NEW)** | health formula, breakdown string, action | `rules.mjs thesis` → `health`/`breakdown`/`action`/`forcedBinary` | read (🟢/🟡/🔴/⚫ status + red-line trigger are judgment inputs) |
+   | 6q data-richness grade **(NEW)** | 5-check grade, gaps, upgrade path | `screen.mjs` → `dataGrade.{grade,checks,gaps,upgradePath}` | read (`--quote-ok`/`--events-known` are judgment flags) |
+   | 3a cross-source deviation | Δabs/Δ%, verdict | `rules.mjs deviate` → `deltaAbs`/`deltaPct`/`verdict` | read |
+   | Action C P&L + sell signals **(NEW)** | cost×shares, unrealized P&L, stop/target hit | `positions.mjs review` → `invested`/`live`/`unrealized`/`unrealizedPct`/`stopHit`/`targetHit` | read |
+   | 6c no-chase classification (spike vs base-breakout vs base-reversal) | — | model judgment | uses `screen.mjs`'s `chgPct`/`signals.dayGainGt3`/`volConfirmed` as inputs |
+   | 6e-1 / 6e-3 theme/correlation grouping | which stocks share a theme | model judgment | supplies `positions.theme` / `heat`'s `legs.json` grouping |
+   | 6f market condition gate (TAIEX vs 50/200MA) | — | model judgment (pending a future network delta — explicitly out of scope for rule-math-mechanization) | applies the gate by hand from a fetched TAIEX quote/MA until mechanized |
+   | 6g buy-zone anchor (which technical level) | — | model judgment | the chosen level becomes `rules.mjs band`'s `--anchor` |
+   | 6h/6i event-date discovery (next 財報/除權息 date) | — | model judgment | the discovered date becomes `rules.mjs earnings`'s `--event` |
+   | 6i ex-dividend adjustment (restore dividend before judging support) | — | model judgment (unmechanized this delta) | — |
+   | 6n execute-or-re-underwrite decision | — | model + user judgment | `breach-check`'s `forcedBinary` only flags WHEN a decision is due, never which branch |
+   | 6o assumption status (🟢/🟡/🔴/⚫) + red-line triggered/not | — | model judgment | becomes `rules.mjs thesis`'s `--json` input |
+   | 6p mirror test (5 sentences) | — | model judgment (narrative) | sentences 2/4/5 quote other rules' script fields verbatim, no hand-math |
+   | 6q `quoteAvailable`/`eventDatesKnown` | — | model judgment (flags) | passes `--quote-ok`/`--events-known` to `screen.mjs` |
+
+   **Adding or altering any numeric rule later**: a row in this table + a golden test
+   case (`node --experimental-sqlite --test`, run from the skill root — `node --test
+   scripts/` does not work on Node 22.18) are part of the change, not follow-up.
 
 ---
 
@@ -614,6 +797,13 @@ catches what no index committee picked).
      dividend amount (Rule 6i)
    - A "站回 / 突破 / 進場條件成立" signal with 當日量 ≤ 5 日均量 → **downgrade** to
      "量縮，待確認"; do not promote on that basis alone (Rule 6j)
+   - **6j-A2 試行掃描 (every session, added 2026-07-28)**: flag any stock where
+     `reversal.isReversalDay && reversal.reclaimed && !signals.volConfirmed` — a Style-3
+     whose *only* failure is the volume leg. Each is a **試行實例**: run
+     `screen.mjs --style 3 --revlow L --zone … --vol-trial`, report it as
+     「6j-A2 成立（試行，不作買進建議）」, and append a paper track to
+     `Eliot/Notes/2026/6j-a2-trial-tracker.md`. Zero instances is a normal, reportable
+     result — never manufacture one. Update the open tracks' outcomes each session.
 
    **For held stocks**: compare live price against recorded 停損 and 停利. If any
    holding has breached its stop (live ≤ 停損), flag it as **持股警報** and present
@@ -653,12 +843,16 @@ catches what no index committee picked).
    per 6a-1 *before* computing R:R — style determines stop width, stop width
    determines 1R, 1R determines the verdict. **All numbers in this step come from
    the script**: `node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3
-   --zone LO-HI [--pivot P] [--revlow L] [--target T] [--equity E]` returns stop,
-   TP1/TP2, 1R, R:R verdict, and share sizing in one JSON. The model supplies the
+   --zone LO-HI [--pivot P] [--revlow L] [--confirm] [--vol-trial] [--target T] [--equity E]` returns stop,
+   TP1/TP2, 1R, R:R verdict, and share sizing (incl. `pilotPct`/`sizing.pilotShares`) in one
+   JSON. The model supplies the
    judgment inputs (style, buy zone, breakout pivot / reversal-day low,
    measured-move target) and MUST NOT hand-compute stop/TP/R:R/shares — hand-math
-   caused both paralysis bugs. The script hard-errors on Style-2 without `--pivot`
-   and Style-3 without `--revlow` (no silent 2×ATR fallback). If the stock is
+   caused both paralysis bugs. The script hard-errors on Style-2 without `--pivot`,
+   Style-3 without `--revlow` (no silent 2×ATR fallback), Style-3 whose 量 ≤ 5日均量
+   unless `--vol-trial` (Rule 6j-A2 試行 — report-only, never a buy), and Style-3c
+   (`--style 3 --confirm`) when `continuation.qualified` is false — the script,
+   not the model, decides 3c qualification. If the stock is
    ATR-hot (`atrHot: true`), lead with the Rule 6m regime statement.
    For each recommended stock:
 
@@ -666,10 +860,14 @@ catches what no index committee picked).
       (6b) that's the 20MA / consolidation floor / key support. For a **Style-2
       breakout** buy that's the **breakout pivot up to +2~3% above it** (you buy the
       breakout, not a lower pullback). For a **Style-3 reversal** buy it's the
-      reversal-day close up to +1% above it. State which style and which level, and
-      why. Never use "spot price minus X%". A Style-2/Style-3 buy zone legitimately
-      includes today's price when a volume-confirmed base breakout / base reversal is
-      in progress (6c does not block either).
+      reversal-day close up to +1% above it. For a **Style-3c 延遲確認** buy it's the
+      confirmation-day close up to +1% above it (**試行期間：僅報告＋紙上追蹤，不作
+      買進建議** — see the 6b 3c trial clause). A Style-3 whose only failure is 6j's
+      volume leg is a **6j-A2 試行** instance — same report-only treatment
+      (`--vol-trial`; buy zone = reversal-day close +1%, pilot would be 25%).
+      State which style and which level, and why. Never use "spot price minus X%". A Style-2/Style-3/Style-3c buy zone legitimately
+      includes today's price when a volume-confirmed base breakout / base reversal /
+      delayed confirmation is in progress (6c does not block any of them).
 
    b. **Stop loss** — per the 6a-1 regime table. For a **Style-1 pullback**:
       `buy_zone_bottom − max(2 × ATR14, buy_zone_bottom × 0.05)`, with **ATR14**
@@ -894,6 +1092,12 @@ per-holding sell recommendation.
    | 權重明顯下降 | ETF weight well below the level recorded at buy | **留意** — losing index conviction |
    | 報酬率檢視 | report unrealized P/L % from cost regardless | context for the above |
 
+   **Computed mechanically by `positions.mjs review [--price code=P ...]`** (Rule 8)
+   — read `invested`/`live`/`unrealized`/`unrealizedPct`/`stopHit`/`targetHit`/
+   `sessionsSinceBreach` per holding; never hand-compute cost × shares or hand-compare
+   live price to the recorded stop/target. `stopHit` folds in `breach-check` (Rule
+   6n) so a re-underwritten position never shows a false 停損觸價.
+
 6. **Thesis health re-score (Rule 6o).** For each holding, read its thesis note
    (`Eliot/Notes/<YYYY>/thesis/<code>-*.md`) and run the health re-score + drift
    check per `references/thesis-tracking.md` §2–4: mark every core assumption
@@ -993,3 +1197,9 @@ TWSE 民國-date gotcha, and the exact CLI for every step.
   official TWSE/TPEx JSON (no browser), then emits the 量價突擊/投信連買/營收YoY signal
   lists behind a liquidity floor. Never hand-fetch its endpoints or hand-parse the field
   indices. CLI + JSON glossary in `references/charting.md` §10.
+- `scripts/rules.mjs` (stateless: `earnings`/`band`/`heat`/`thesis`/`deviate`) and
+  `scripts/positions.mjs` (needs the `positions` table: `theme-stop`/`breach-check`/
+  `review`) are the rule-math-mechanization engines (Rule 8) — see the 規則計算歸屬表
+  for which rule each verb owns. Read only, never hand-compute; CLI + JSON glossary in
+  `references/charting.md` §11–12. `rules.mjs earnings --sync-holidays` is the ONLY
+  network call in this delta (opt-in, refreshes the built-in Taiwan holiday table).
