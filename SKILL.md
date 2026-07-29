@@ -459,6 +459,30 @@ that section. The non-negotiable rules below apply to all of them.
    its anchor) — met-but-unbuyable is a contradiction the trigger's author created,
    and resolving it ad hoc looks like paralysis. The 觀察名單 entry format (step 9)
    carries the band explicitly.
+
+   **6l-1. The band is TWO-SIDED, and it is NOT the buy zone (added 2026-07-29,
+   user-identified).** Two distinct errors, both made on 3504 the same session:
+
+   - **Below the anchor is not a discount — the trigger has not fired.** `rules.mjs
+     band` returns `fired: false` for any price under `bandLo`. A price below the
+     anchor is not a cheaper entry into the same setup; it is a session in which the
+     entry condition is simply untrue. Never set a buy-zone floor below the anchor.
+     In particular, **never use an EXIT level as an ENTRY floor** — the Style-3
+     thesis-death line (reversal-day low) says when to get *out*; using it as a
+     buy-zone bottom fabricates room no rule grants (3504: floor written at 62.5,
+     6.1 元 below any authorised price).
+   - **The band answers "is this setup stale?", R:R answers "is this trade worth
+     taking?".** Both must pass; **R:R is usually the binding one**, because the band
+     is a fixed percentage while the R:R cost of that percentage scales with stop
+     width. A −5% stop absorbs +1% cheaply; a −10% stop does not (2539 band-top still
+     viable vs 3504 band-top already 1.29 FAIL). Step 7a defines the Style-2/3 buy
+     zone as the band, so **the two names denote the same interval while being tested
+     by different rules** — say both numbers, always.
+
+   The authorised entry set is the **intersection**: `[bandLo, bandHi] ∩ {price :
+   R:R ≥ 1.5}`. It may be a single point (3504 2026-07-29: `[68.6, 69.29] ∩ (−∞,
+   68.6] = {68.6}`), and a single point is a legitimate, reportable answer — say
+   「唯一合法進場價 X」 rather than widening the zone to make it look tradeable.
    **Computed mechanically by `rules.mjs band --style 1|2|3 --anchor A [--price P]
    [--breakout-pct N]`** (Rule 8) — read `bandLo`/`bandHi`/`fired`/`lateFire`/
    `excessPct` from its JSON; never hand-write the ±% band or eyeball a late fire. If
@@ -896,6 +920,13 @@ catches what no index committee picked).
       if a Style-2 candidate was computed with a 2×ATR stop (or a stop anchored to
       the base low), recompute with the structural pivot stop first. A failed R:R
       with a mismatched stop regime is not a signal — it is the bug.
+      **Also re-test at the zone BOTTOM before passing (promoted from
+      `references/charting.md` §9, 2026-07-29).** The script measures R:R mid→target;
+      a `rrPass: false` at mid with a pass at the bottom is **not** a fail — it is
+      「只在買區下緣進」, a deep-entry-only setup. Report it as such with the exact
+      ceiling price. Leaving this clause in a script-reference file meant the rule as
+      written in SKILL.md said only "FAIL" (e.g. 3711 2026-07-03 mid 1.33 / bottom
+      1.49; 3504 2026-07-29 mid 1.42 / bottom 1.52).
 
    e. **Position sizing (Rule 6e-2, 6e-3).** For each stock, calculate:
       `shares = (account_equity × 0.01) / (entry − stop)`.
@@ -926,10 +957,16 @@ catches what no index committee picked).
    `references/thesis-tracking.md`) seeds 進場論點 from. The note MUST also include a
    `### 觀察名單` section listing each watchlist stock with its specific trigger
    condition — this is what step 3.5 reads in the next session. Format each entry
-   as: `- <code> <name>：<trigger condition>（有效帶 <lo>-<hi>）` — the validity band
-   is mandatory per Rule 6l (anchor +2%; breakout pivot +2~3%; reversal close +1%).
-   E.g. `- 3037 欣興：等 KD 黃金交叉 + 站回 20MA(948)（有效帶 948-967）`. A condition
-   that fires with price beyond its band is a late fire → rewrite, not a buy.
+   as: `- <code> <name>：<trigger condition>（可買 ≤<X> ／ 有效帶 <lo>-<hi>）` — the
+   validity band is mandatory per Rule 6l (anchor +2%; breakout pivot +2~3%; reversal
+   close +1%), and **the R:R ceiling `可買 ≤X` is mandatory alongside it** (added
+   2026-07-29 — see 6l-1). E.g.
+   `- 3037 欣興：等 KD 黃金交叉 + 站回 20MA(948)（可買 ≤952 ／ 有效帶 948-967）`.
+   A condition that fires with price beyond its band is a late fire → rewrite, not a
+   buy. **Emitting the band alone is a defect**: the next session's reader inherits an
+   interval that reads as a buy zone, and the format then reproduces the error every
+   day (that is exactly how the 3504 2026-07-29 mis-scope propagated into the markers
+   and the simulator).
 
 10. **Mirror to SQLite (structured layer, after the Eliot write).** Once the user approves
     the persist, also record the structured side so charts stay current (Rule 5; mechanics in
