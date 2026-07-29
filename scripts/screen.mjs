@@ -348,6 +348,88 @@ export function screenCode(db, code, dateOpt, gradeOpts) {
 
 // ---- trade plan (mode 2) ---------------------------------------------------------------
 
+/** TWSE/TPEx tick size for a given price level. Orders can only sit on a tick. */
+export function tickSize(price) {
+  if (price < 10) return 0.01;
+  if (price < 50) return 0.05;
+  if (price < 100) return 0.1;
+  if (price < 500) return 0.5;
+  if (price < 1000) return 1;
+  return 5;
+}
+/** Highest tick-aligned price <= p (tick chosen from the resulting level, not from p). */
+function floorToTick(p) {
+  for (const probe of [p, p - 1e-9]) {
+    const t = tickSize(probe);
+    const v = Math.floor(probe / t + 1e-9) * t;
+    if (tickSize(v) === t) return Math.round(v / t) * t;
+  }
+  const t = tickSize(p);
+  return Math.round(Math.floor(p / t) * t / t) * t;
+}
+
+/**
+ * Rule 6l-1 — the AUTHORISED ENTRY SET: the intersection of the 6l validity band and the
+ * prices where R:R >= 1.5, then aligned to the exchange tick.
+ *
+ * Why this is mechanical and not the model's job: the band is a fixed percentage, but the
+ * R:R cost of that percentage scales with stop width, so the two constraints cross at a
+ * price nobody can eyeball. On 3504 (2026-07-29) the band was 68.6-69.29 while R:R only
+ * held to 68.68 — and after tick alignment (0.1 at that level) the authorised set was the
+ * single price 68.6. Reporting the band alone reads as a buy zone that is 85% unbuyable.
+ *
+ * The stop is held FIXED: it is structural (anchored to the pivot / reversal low / support),
+ * so filling higher inside the zone does NOT move it — that asymmetry is the whole point.
+ */
+export function authorisedEntry({ style, stop, target, bottom, close, pivot, breakoutPct = 3 }) {
+  const RR_MIN = 1.5;
+  // Highest entry where (T - E) / (E - S) >= RR_MIN.
+  //  fixed target T      -> E <= (T + RR*S) / (1 + RR)
+  //  default target E*1.15 -> E <= RR*S / (RR - 0.15)
+  // FLOOR to 2dp, never round: rounding the ceiling UP yields a price that fails the very
+  // test it claims to satisfy (68.6666 -> 68.67 -> R:R 1.4993). A ceiling must be inclusive.
+  const floor2 = (v) => Math.floor(v * 100 + 1e-9) / 100;
+  const maxEntryForRR = floor2(target != null
+    ? (target + RR_MIN * stop) / (1 + RR_MIN)
+    : (RR_MIN * stop) / (RR_MIN - 0.15));
+
+  let anchor, bandHi, anchorSource;
+  if (style === 2) {
+    anchor = pivot; bandHi = pivot * (1 + breakoutPct / 100);
+    anchorSource = `breakout pivot ${pivot} +${breakoutPct}% (Rule 6l)`;
+  } else if (style === 3) {
+    anchor = close; bandHi = close * 1.01;
+    anchorSource = `reversal/confirmation close ${close} +1% (Rule 6l)`;
+  } else {
+    anchor = bottom; bandHi = bottom * 1.02;
+    anchorSource = `zone bottom (support anchor) ${r1(bottom)} +2% (Rule 6l)`;
+  }
+
+  const lo = anchor, hi = Math.min(bandHi, maxEntryForRR);
+  const empty = hi < lo;
+  const tickHi = empty ? null : floorToTick(hi);
+  const tickEmpty = !empty && tickHi < lo;      // no tick sits inside the interval
+  const tick = tickSize(anchor);
+  const singlePoint = !empty && !tickEmpty && Math.abs(tickHi - lo) < tick / 2;
+
+  const binding = empty || maxEntryForRR < bandHi ? 'rr' : 'band';
+  const notes = [];
+  if (empty) notes.push(`授權集合為空：R:R 上限 ${r2(maxEntryForRR)} 低於有效帶下緣 ${r1(lo)} — 這個 setup 在任何合法價位都不划算，不是可買標的`);
+  else if (tickEmpty) notes.push(`授權區間 ${r2(lo)}-${r2(hi)} 內沒有任何合法檔位（檔位 ${tick}）— 實務上無法下單`);
+  else if (singlePoint) notes.push(`唯一合法進場價 ${r2(tickHi)}（單一價位，非區間）— 有效帶 ${r1(lo)}-${r1(bandHi)} ∩ R:R≤${r2(maxEntryForRR)}，再對齊檔位 ${tick}`);
+  else notes.push(`合法進場區間 ${r2(lo)}-${r2(tickHi)}（檔位 ${tick}）— 綁死的是 ${binding === 'rr' ? 'R:R 上限' : '有效帶上緣'}`);
+  notes.push('有效帶下緣之下 fired:false（觸發未成立，非折價買點）；上緣之上為遲到觸發。兩側皆非進場（Rule 6l-1）');
+
+  return {
+    band: { lo: r1(lo), hi: r1(bandHi), anchor: r1(anchor), anchorSource },
+    maxEntryForRR,
+    tick,
+    lo: empty || tickEmpty ? null : r2(lo),
+    hi: empty || tickEmpty ? null : r2(tickHi),
+    singlePoint, empty: empty || tickEmpty, binding, notes,
+  };
+}
+
 export function tradePlan(db, code, opts) {
   const scr = screenCode(db, code, opts.date, opts);
   if (scr.error) return { code, error: scr.error };
@@ -442,6 +524,13 @@ export function tradePlan(db, code, opts) {
   const rr = (target - mid) / oneR;
   const rrPass = rr >= 1.5;
 
+  // Use the REPORTED (rounded) stop, not the raw one: a reader must be able to reproduce
+  // maxEntryForRR from the numbers printed in this same object.
+  const entryAuthorised = authorisedEntry({
+    style: opts.style, stop: r1(stop), target: opts.target, bottom, close: scr.close,
+    pivot: opts.pivot, breakoutPct: opts.breakoutPct ?? 3,
+  });
+
   const is3c = opts.style === 3 && opts.confirm;
   const out = {
     code, date: scr.date, close: scr.close, style: opts.style,
@@ -457,6 +546,7 @@ export function tradePlan(db, code, opts) {
     stop: r1(stop), stopPctBelowBottom: r2((bottom - stop) / bottom * 100),
     tp1: r1(tp1), tp2: r1(tp2), rewardTarget: r1(target),
     oneR: r1(oneR), rr: r2(rr), rrPass,
+    entryAuthorised,
     notes,
   };
   if (opts.equity != null) {
@@ -511,6 +601,7 @@ function main() {
         confirm: argv.includes('--confirm'),
         volTrial: argv.includes('--vol-trial'),
         target: flag('--target') ? Number(flag('--target')) : null,
+        breakoutPct: flag('--breakout-pct') ? Number(flag('--breakout-pct')) : 3,
         equity: flag('--equity') ? Number(flag('--equity')) : null,
         date: flag('--date'),
         ...gradeOpts,

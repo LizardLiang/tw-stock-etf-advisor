@@ -480,9 +480,22 @@ that section. The non-negotiable rules below apply to all of them.
      by different rules** — say both numbers, always.
 
    The authorised entry set is the **intersection**: `[bandLo, bandHi] ∩ {price :
-   R:R ≥ 1.5}`. It may be a single point (3504 2026-07-29: `[68.6, 69.29] ∩ (−∞,
-   68.6] = {68.6}`), and a single point is a legitimate, reportable answer — say
-   「唯一合法進場價 X」 rather than widening the zone to make it look tradeable.
+   R:R ≥ 1.5}`, **then aligned to the exchange tick**. It may be a single point (3504
+   2026-07-29: `[68.6, 69.29] ∩ (−∞, 68.68]`, tick 0.1 → `{68.6}`) or **empty** (6668
+   same session: R:R ceiling 36.18 sits below the band floor 37.15 → no legal price
+   exists, so it is not a buy at any price). Both are legitimate, reportable answers —
+   say 「唯一合法進場價 X」 or 「授權集合為空」 rather than widening the zone to make
+   it look tradeable.
+
+   **Computed mechanically by `screen.mjs`'s trade plan → `entryAuthorised`** (Rule 8,
+   added v1.15.0). Read `lo`/`hi` as the buy zone; `singlePoint`/`empty`/`binding`
+   explain which constraint bound. **Never quote the band alone as a buy zone, and
+   never re-derive the ceiling by trying prices** — that hand-work is what produced
+   both 3504 errors. Two details the script owns because they are easy to get wrong:
+   the ceiling is **floored** to the tick, never rounded (rounding up yields a price
+   that fails the very test it claims to pass — 68.6666 → 68.67 → R:R 1.4993), and it
+   is computed from the **reported** (rounded) stop so a reader can reproduce it from
+   the numbers printed in the same object.
    **Computed mechanically by `rules.mjs band --style 1|2|3 --anchor A [--price P]
    [--breakout-pct N]`** (Rule 8) — read `bandLo`/`bandHi`/`fired`/`lateFire`/
    `excessPct` from its JSON; never hand-write the ±% band or eyeball a late fire. If
@@ -646,6 +659,7 @@ that section. The non-negotiable rules below apply to all of them.
    | 6j-A2 量能試行 **(NEW)** | trial flag + 25% pilot split | `screen.mjs --style 3 --vol-trial` → `volTrial`/`variant`/`pilotPct`/`sizing.pilotShares` | read (report-only during the trial; never a buy) |
    | 6e-5 pilot fraction **(NEW)** | pilot % and pilot share count | `screen.mjs` trade-plan → `pilotPct`/`sizing.pilotShares`/`sizing.pilotRiskDollars` | read (never hand-halve a position) |
    | 6l trigger validity band **(NEW)** | band edges, late-fire excess % | `rules.mjs band` → `bandLo`/`bandHi`/`fired`/`lateFire`/`excessPct` | read |
+   | 6l-1 authorised entry set **(NEW)** | band ∩ R:R ceiling, tick-aligned | `screen.mjs` trade-plan → `entryAuthorised.{band,maxEntryForRR,tick,lo,hi,singlePoint,empty,binding,notes[]}` | read — **quote `lo`/`hi` as the buy zone, never the band alone**; `empty:true` = not a buy at any price; `singlePoint:true` = say 「唯一合法進場價 X」, never widen it |
    | 6m ATR-hot regime | ATR% vs 6% threshold | `screen.mjs` → `atrHot` | read |
    | 6n breach session counter **(NEW)** | sessions since breach, forced-binary flag | `positions.mjs breach-check` → `breached`/`sessionsSinceBreach`/`forcedBinary` | read (execute-vs-re-underwrite choice stays judgment) |
    | 6o thesis health score **(NEW)** | health formula, breakdown string, action | `rules.mjs thesis` → `health`/`breakdown`/`action`/`forcedBinary` | read (🟢/🟡/🔴/⚫ status + red-line trigger are judgment inputs) |

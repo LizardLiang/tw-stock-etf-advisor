@@ -269,6 +269,19 @@ node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3 --zone LO-HI 
   `sizing.pilotShares = floor(shares × pilotPct/100)` — the Rule 6e-5 first entry (50%, or 25%
   on the 6j-A2 trial path). **Never hand-halve a position — read `pilotShares`.**
 
+- `entryAuthorised` — **the Rule 6l-1 authorised entry set** (added v1.15.0): the 6l band
+  INTERSECT the prices where R:R >= 1.5, aligned to the exchange tick. Fields:
+  `band{lo,hi,anchor,anchorSource} maxEntryForRR tick lo hi singlePoint empty binding notes[]`.
+  **Quote `lo`/`hi` as the buy zone — never the band alone.** The band is a fixed percentage
+  while the R:R cost of that percentage scales with stop width, so the two cross at a price
+  nobody can eyeball: on 3504 (2026-07-29) the band was 68.6-69.29, R:R held only to 68.68,
+  and after tick alignment the authorised set was the single price **68.6**. `empty: true`
+  means no legal price exists (6668 same session: ceiling 36.18 below band floor 37.15) —
+  that is a complete answer, not a failure to compute. Two details the script owns: the
+  ceiling is FLOORED to the tick (rounding up yields a price failing its own test —
+  68.6666 -> 68.67 -> R:R 1.4993), and it uses the REPORTED (rounded) stop so a reader can
+  reproduce it from the same object. `tickSize()` is exported for reuse.
+
 Output JSON: `style variant volTrial pilotPct volRatio zone pivot revlow confirmLow reversalDate
 atr14 atrHot stop stopPctBelowBottom tp1 tp2
 rewardTarget oneR rr rrPass notes[] sizing? gate` — `variant` is `'3c'` for a

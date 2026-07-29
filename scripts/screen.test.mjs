@@ -2,6 +2,7 @@
 //   - Rule 6q dataGrade (A/B/C)
 //   - Style-3 reclaim regression (the 2026-07-20 fix: declineDays/declineStart/reclaimed)
 //   - Style-3c 延遲確認 continuation gate + trade plan (the 2026-07-22 2454 incident)
+//   - Rule 6l-1 authorisedEntry: band INTERSECT R:R, tick-aligned (the 2026-07-29 3504 incident)
 // node --experimental-sqlite --test scripts/screen.test.mjs
 //
 // Uses an ISOLATED temp DB (TW_STOCK_DB) seeded with synthetic OHLC — deterministic, and
@@ -13,7 +14,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb, upsertOhlc } from './db.mjs';
-import { screenCode, tradePlan } from './screen.mjs';
+import { screenCode, tradePlan, authorisedEntry, tickSize } from './screen.mjs';
 
 let tmpDir, db;
 
@@ -379,4 +380,94 @@ test('6j-A2 T5: the trial is scoped to Style-3 only — Style-2 unaffected, 3c s
   const s3c = tradePlan(db, code, { style: 3, zone: A2_ZONE, confirm: true, date: '2026-07-21', volTrial: true });
   assert.ok(s3c.error, '--vol-trial must not bypass the 3c continuation gate');
   assert.match(s3c.error, /continuation\.qualified/);
+});
+
+// ---------------------------------------------------------------- Rule 6l-1 authorisedEntry
+// The 2026-07-29 3504 incident: the buy zone was written as the 6l band 68.6-69.29, but R:R
+// only held to 68.67, and after tick alignment the authorised set was the SINGLE price 68.6.
+// Then it was "fixed" by widening DOWNWARD to 62.5 — using the thesis-death line as an entry
+// floor, which no rule authorises. These pin both sides of the band.
+
+test('6l-1: tickSize follows the TWSE/TPEx ladder', () => {
+  assert.equal(tickSize(9.99), 0.01);
+  assert.equal(tickSize(10), 0.05);
+  assert.equal(tickSize(49.95), 0.05);
+  assert.equal(tickSize(50), 0.1);
+  assert.equal(tickSize(68.6), 0.1);
+  assert.equal(tickSize(100), 0.5);
+  assert.equal(tickSize(500), 1);
+  assert.equal(tickSize(1000), 5);
+});
+
+test('6l-1: 3504 canonical case — band 68.6-69.29 collapses to the single price 68.6', () => {
+  const a = authorisedEntry({ style: 3, stop: 61.8, target: 79, bottom: 68.6, close: 68.6 });
+  assert.equal(a.band.lo, 68.6);
+  assert.equal(a.maxEntryForRR, 68.68);          // floor2((79 + 1.5*61.8) / 2.5)
+  assert.equal(a.tick, 0.1);                      // 50-100 band
+  assert.equal(a.lo, 68.6);
+  assert.equal(a.hi, 68.6);
+  assert.equal(a.singlePoint, true, 'a single legal price is a legitimate answer');
+  assert.equal(a.empty, false);
+  assert.equal(a.binding, 'rr', 'R:R binds tighter than the band when the stop is wide');
+  assert.match(a.notes[0], /唯一合法進場價 68.6/);
+});
+
+test('6l-1: the R:R ceiling really is below the band top (the mis-scope being prevented)', () => {
+  const a = authorisedEntry({ style: 3, stop: 61.8, target: 79, bottom: 68.6, close: 68.6 });
+  assert.ok(a.maxEntryForRR < a.band.hi,
+    'if this ever flips, the band alone would be a safe buy zone and 6l-1 would be moot');
+});
+
+test('6l-1: empty set when the R:R ceiling sits below the band floor (6668)', () => {
+  // rr at the anchor is 0.86 — no price in the band is worth taking.
+  const a = authorisedEntry({ style: 3, stop: 33.4, target: 40.4, bottom: 37.15, close: 37.15 });
+  assert.equal(a.empty, true);
+  assert.equal(a.lo, null);
+  assert.equal(a.hi, null);
+  assert.match(a.notes[0], /授權集合為空/);
+});
+
+test('6l-1: a narrow stop leaves a real interval, not a point (2539)', () => {
+  const a = authorisedEntry({ style: 3, stop: 40.5, target: 46, bottom: 42.65, close: 42.65 });
+  assert.equal(a.empty, false);
+  assert.equal(a.singlePoint, false);
+  assert.ok(a.hi > a.lo, 'a -5% stop absorbs the +1% band where a -10% stop cannot');
+});
+
+test('6l-1: band width follows the style (1 -> +2%, 2 -> pivot +N%, 3 -> close +1%)', () => {
+  const s1 = authorisedEntry({ style: 1, stop: 90, target: 130, bottom: 100, close: 100 });
+  assert.equal(s1.band.hi, 102);
+  const s2 = authorisedEntry({ style: 2, stop: 90, target: 130, bottom: 100, close: 100, pivot: 100 });
+  assert.equal(s2.band.hi, 103);
+  const s2b = authorisedEntry({ style: 2, stop: 90, target: 130, bottom: 100, close: 100, pivot: 100, breakoutPct: 2 });
+  assert.equal(s2b.band.hi, 102);
+  const s3 = authorisedEntry({ style: 3, stop: 90, target: 130, bottom: 100, close: 100 });
+  assert.equal(s3.band.hi, 101);
+});
+
+test('6l-1: the default (moving) target uses the E*1.15 solution, not the fixed-target one', () => {
+  // target omitted -> TP2 = E*1.15, so E <= 1.5*S / 1.35
+  const a = authorisedEntry({ style: 3, stop: 61.8, target: null, bottom: 68.6, close: 68.6 });
+  assert.equal(a.maxEntryForRR, 68.66);   // floor2(1.5*61.8 / 1.35) = floor2(68.6666)
+  // sanity: at that entry, rr computed the plan's way is >= 1.5
+  const E = a.maxEntryForRR, rr = (E * 1.15 - E) / (E - 61.8);
+  assert.ok(rr >= 1.5, `the ceiling must itself PASS R:R (floor, never round), got ${rr}`);
+});
+
+test('6l-1: notes always state that BOTH sides of the band are non-entries', () => {
+  const a = authorisedEntry({ style: 3, stop: 61.8, target: 79, bottom: 68.6, close: 68.6 });
+  const tail = a.notes.at(-1);
+  assert.match(tail, /fired:false/);
+  assert.match(tail, /遲到觸發/);
+});
+
+test('6l-1: tradePlan surfaces entryAuthorised so the model never re-derives it', () => {
+  const code = 'AUTH_T9';
+  seed2454Shape(db, code);
+  const p = tradePlan(db, code, { style: 2, zone: A2_ZONE, pivot: 3740, date: '2026-07-21' });
+  assert.ok(!p.error);
+  assert.ok(p.entryAuthorised, 'entryAuthorised must be on every trade plan');
+  assert.ok('maxEntryForRR' in p.entryAuthorised);
+  assert.ok('singlePoint' in p.entryAuthorised);
+  assert.ok('empty' in p.entryAuthorised);
 });
