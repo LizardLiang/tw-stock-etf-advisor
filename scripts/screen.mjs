@@ -11,13 +11,19 @@
 //
 // Mode 2 — trade plan (single code + judgment inputs; enforces Rule 6a-1 stop regime):
 //   node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3 --zone LO-HI \
-//        [--pivot P] [--revlow L] [--target T] [--equity E]
+//        [--pivot P] [--revlow L] [--confirm] [--vol-trial] [--target T] [--equity E]
 //   style 1 (pullback):  stop = zone_bottom − max(2×ATR14, bottom×5%)
 //   style 2 (breakout):  REQUIRES --pivot; stop = min(pivot×0.99, bottom×0.95)
 //                        (just under the pivot, honoring the 5% floor — never 2×ATR)
 //   style 3 (reversal):  REQUIRES --revlow (reversal-day low); stop = min(revlow×0.99,
 //                        bottom×0.95). Base-inside reversal-day entry (Rule 6b Style-3,
-//                        added 2026-07-08); pilot 50% only, close < revlow = out.
+//                        added 2026-07-08); pilot 50% only, close < revlow = out. REQUIRES
+//                        量 > 5日均量 (Rule 6j) unless --vol-trial (Rule 6j-A2 試行,
+//                        added 2026-07-28): report-only paper track, 25% pilot, NEVER a buy.
+//   style 3 --confirm (3c 延遲確認, added 2026-07-22): no --revlow; the CONFIRMATION-day
+//                        low is read from the DB; stop = min(confirmLow×0.99, bottom×0.95).
+//                        HARD-ERRORS unless the screening `continuation.qualified` is true
+//                        — the script, not the model, decides 3c qualification.
 //
 // Indicators are computed from the local OHLC DB (TWSE settled closes). Values converge
 // with Histock to ~±1–2 given the ~3-month warmup; Histock is a spot-check, not the
@@ -102,9 +108,57 @@ function atr14At(rows, endIdx) {
   return { atr: s / 14, provisional: false };
 }
 
+// ---- #8 6q data-richness grade (A/B/C) ------------------------------------------------
+
+// Same liquidity floor scan.mjs uses for its discovery sweep (--min-value default) — a stop
+// on an illiquid name is fiction (Rule 6q check 5), so this is the honest shared threshold.
+const LIQUIDITY_FLOOR = 100_000_000;
+
+function dataGrade(db, code, rows, last, vol5avg, opts = {}) {
+  const ohlcDepth = rows.length >= 60 ? 'pass' : rows.length >= 14 ? 'partial' : 'fail';
+  const indicatorsComputable = 'pass'; // reached this point without erroring — script ran clean
+  const quoteAvailable = opts.quoteOk ? 'pass' : 'partial';
+  const eventDatesKnown = opts.eventsKnown ? 'pass' : 'partial';
+
+  // 5-day avg turnover vs the liquidity floor; reuse market_snapshot.value (scan.mjs) when
+  // present for this exact session, else derive from the local screen (close × vol5avg).
+  const snap = db.prepare('SELECT value FROM market_snapshot WHERE code=? AND date=?').get(code, last.date);
+  const turnover = snap?.value ?? (vol5avg != null ? last.close * vol5avg : null);
+  const liquidity = turnover == null ? 'partial' : (turnover >= LIQUIDITY_FLOOR ? 'pass' : 'fail');
+
+  const checks = { ohlcDepth, quoteAvailable, indicatorsComputable, eventDatesKnown, liquidity };
+  const criticalGap = ohlcDepth === 'fail' || indicatorsComputable === 'fail' || liquidity === 'fail';
+  const allPass = Object.values(checks).every((v) => v === 'pass');
+  const grade = criticalGap ? 'C' : (allPass ? 'A' : 'B');
+
+  // 6q forbids a bare C/B — every gap gets a concrete, actionable upgrade path.
+  const gaps = [], upgradePath = [];
+  if (ohlcDepth !== 'pass') {
+    const need = Math.max(ohlcDepth === 'fail' ? 14 - rows.length : 60 - rows.length, 1);
+    gaps.push(`ohlcDepth: ${ohlcDepth} (${rows.length} sessions)`);
+    upgradePath.push(`另補 ${need} 個交易日後重評 (fetch-history.mjs --months N)`);
+  }
+  if (quoteAvailable !== 'pass') {
+    gaps.push('quoteAvailable: unknown');
+    upgradePath.push('確認即時報價可得後，帶 --quote-ok 重跑');
+  }
+  if (eventDatesKnown !== 'pass') {
+    gaps.push('eventDatesKnown: unknown');
+    upgradePath.push('查證財報/除權息日後，帶 --events-known 重跑');
+  }
+  if (liquidity !== 'pass') {
+    gaps.push(`liquidity: ${liquidity}${turnover != null ? ` (NT$${Math.round(turnover)})` : ' (unknown)'}`);
+    upgradePath.push(liquidity === 'fail'
+      ? '流動性未達門檻（NT$1億/日），非本工具可補，觀察是否放量後重評'
+      : '流動性數據不足（無 market_snapshot 且量能未知），補齊成交值後重評');
+  }
+
+  return { grade, checks, gaps, upgradePath };
+}
+
 // ---- screening (mode 1) --------------------------------------------------------------
 
-function screenCode(db, code, dateOpt) {
+export function screenCode(db, code, dateOpt, gradeOpts) {
   const rows = getOhlc(db, code);            // ascending by date
   if (!rows.length) return { code, error: 'no OHLC rows — run fetch-history.mjs first' };
 
@@ -197,6 +251,57 @@ function screenCode(db, code, dateOpt) {
     };
   }
 
+  // Rule 6b Style-3c 延遲確認 (added 2026-07-22): the session immediately after a day-1/2
+  // reversal candidate qualifies as an entry when ALL confirmations are present TODAY.
+  // Born from the 2454 2026-07-22 incident: the 7/21 reversal day failed volume (0.84×)
+  // AND reclaim; both arrived on 7/22 (1.58×, close 3,850 > declineStart 3,740) with no
+  // legal entry path — 4th instance of the "mechanically correct gate emits 等 in a regime
+  // it wasn't designed for" defect class. NOTE the `reversal` object above only identifies
+  // up-day 1 (declineDays=0 on any later up day), so this block counts the up-run itself.
+  // Fresh-reversal-day and continuation are mutually exclusive by the shared isDown
+  // predicate: fresh needs yesterday DOWN, continuation needs yesterday NOT-down.
+  let continuation = null;
+  if (idx >= 3) {
+    const isDown = i => i > 0 && rows[i].close < rows[i - 1].close;
+    // upRun = consecutive not-down closes ending today (today included). A flat close
+    // counts as not-down for candidacy (matches the reversal block's convention), but a
+    // flat close TODAY still fails closeAboveReversal below (strict >) — intentional.
+    let upRun = 0;
+    for (let i = idx; i > 0 && !isDown(i); i--) upRun++;
+    // decline segment immediately preceding the up-run (same walk-back as `reversal`)
+    const runStart = idx - upRun;                  // bar just before the up-run
+    let dj = runStart;
+    while (dj > 0 && isDown(dj)) dj--;             // dj lands on the bar BEFORE the decline run
+    const cDeclineDays = runStart - dj;
+    const cDeclineStart = cDeclineDays > 0 ? rows[dj].close : null;
+    // Window (D3): yesterday must be up-day 1 or 2 of the move → upRun ∈ {2,3} as of
+    // today. upRun ≥ 4 = yesterday was up-day 3+ (late per 6b Style-3) → never qualifies.
+    const windowOk = (upRun === 2 || upRun === 3) && cDeclineDays >= 1;
+    const kdGoldenYesterday = K[idx - 1] != null && D[idx - 1] != null && K[idx - 2] != null
+      && K[idx - 1] > D[idx - 1] && K[idx - 1] > K[idx - 2];
+    const checks = {
+      windowOk,
+      kdGoldenYesterday,                                        // candidacy as-of idx−1
+      closeAboveReversal: last.close > rows[idx - 1].close,     // holds the reversal
+      reclaimedNow: cDeclineStart != null && last.close > cDeclineStart,
+      volConfirmed: volRatio != null && volRatio > 1,           // Rule 6j, same strict >
+      kdGoldenToday: kdGolden,                                  // golden persists
+      rsi6LE80: rsi6 != null && rsi6 <= 80,
+    };
+    const cFailures = Object.keys(checks).filter(k => !checks[k]);
+    continuation = {
+      upRun,
+      reversalDate: rows[idx - 1].date,            // the candidate being confirmed (always yesterday, D3)
+      reversalClose: rows[idx - 1].close,
+      reversalDayOfMove: upRun - 1,                // 1 or 2 when windowOk; raw otherwise
+      declineDays: cDeclineDays,
+      declineStart: cDeclineStart,                 // the reclaim anchor
+      checks,
+      qualified: cFailures.length === 0,
+      failures: cFailures,
+    };
+  }
+
   // Histock spot-check hint: any reading within ±3 of a gate threshold
   const near = (v, t) => v != null && Math.abs(v - t) <= 3;
   const histockSpotCheck = near(rsi6, 70) || near(rsi6, 80) || near(k9, 80) || near(dev20, 10);
@@ -227,6 +332,7 @@ function screenCode(db, code, dateOpt) {
       volStrong: volRatio != null && volRatio >= 1.5,
     },
     reversal,
+    continuation,
     gate: {
       style1: { pass: failures.length === 0, failures },
       style2Partial: {
@@ -236,19 +342,25 @@ function screenCode(db, code, dateOpt) {
       },
       histockSpotCheck,
     },
+    dataGrade: dataGrade(db, code, rows, last, vol5avg, gradeOpts),
   };
 }
 
 // ---- trade plan (mode 2) ---------------------------------------------------------------
 
-function tradePlan(db, code, opts) {
-  const scr = screenCode(db, code, opts.date);
+export function tradePlan(db, code, opts) {
+  const scr = screenCode(db, code, opts.date, opts);
   if (scr.error) return { code, error: scr.error };
+  if (opts.confirm && opts.style !== 3) {
+    return { code, error: '--confirm is only valid with --style 3 (Rule 6b Style-3c 延遲確認)' };
+  }
 
   const [lo, hi] = opts.zone;
   const bottom = lo, mid = (lo + hi) / 2;
   const notes = [];
   let stop;
+  let volTrial = false;          // Rule 6j-A2 試行 (2026-07-28) — set only on the Style-3 trial path
+  let pilotPct = 50;             // Rule 6e-5: first entry is always a 50% pilot; A2 halves it again
 
   if (opts.style === 1) {
     // Rule 6a / 6a-1 Style-1: bottom − max(2×ATR14, bottom×5%)
@@ -260,11 +372,45 @@ function tradePlan(db, code, opts) {
       ? `stop width = 2×ATR14 (${r1(atrDist)}) > 5% floor (${r1(floorDist)})`
       : `stop widened to the 5% floor (${r1(floorDist)}) — 2×ATR14 (${r1(atrDist)}) was tighter`);
     if (scr.atrHot) notes.push(`Rule 6m: ATR ${scr.atrPct}% > 6% — pullback path is regime-closed; only the zone bottom can pass R:R. Prefer Style-2 breakout or Style-3 reversal until ATR contracts.`);
+  } else if (opts.style === 3 && opts.confirm) {
+    // Rule 6b Style-3c (2026-07-22): delayed-confirmation continuation entry. The script,
+    // not the model, decides qualification — refuse to plan when today is not a valid +1
+    // confirmation day (same refuse-to-guess policy as the --pivot/--revlow hard errors).
+    if (!scr.continuation?.qualified) {
+      const why = scr.continuation
+        ? `failures: ${scr.continuation.failures.join(', ')}`
+        : 'continuation unavailable (<4 sessions of history)';
+      return { code, error: `Style-3c requires continuation.qualified — today is not a valid +1 confirmation day (${why}). Refusing to plan an unqualified 3c entry.` };
+    }
+    if (opts.revlow != null) notes.push('--revlow ignored — Style-3c reads the confirmation-day low from the DB (Rule 6a-1)');
+    // Stop (D2): just under the CONFIRMATION-day low, honoring the 5% floor. The
+    // reversal-day low is deliberately NOT used — after a strong day-2 it sits ~10%+
+    // below entry, inflating 1R and recreating the paralysis (2454 2026-07-22: −12.3%).
+    const confirmLow = scr.low;
+    const confStop = confirmLow * 0.99, floorStop = bottom * 0.95;
+    stop = Math.min(confStop, floorStop);
+    notes.push(confStop <= floorStop
+      ? `stop = just under confirmation-day low ${confirmLow} (${r1(confStop)})`
+      : `confirmation-low stop ${r1(confStop)} tighter than the 5% floor — widened to ${r1(floorStop)} (Rule 6a-1)`);
+    notes.push(`Style-3c 延遲確認: confirms reversal day ${scr.continuation.reversalDate} (close ${scr.continuation.reversalClose}); reclaim anchor ${scr.continuation.declineStart}; vol ${scr.volRatio}× (Rule 6b Style-3c)`);
+    notes.push(`Style-3c: pilot 50% ONLY; close below confirmation-day low ${confirmLow} = out, no averaging; validity band = confirmation-day close +1% (rules.mjs band --style 3 --anchor ${scr.close})`);
   } else if (opts.style === 3) {
     // Rule 6b Style-3 (2026-07-08): reversal-day entry inside an established base.
     // Structural stop just under the reversal-day low, honoring the 5% floor.
     if (opts.revlow == null) {
       return { code, error: 'Style-3 requires --revlow (the reversal day\'s low). Refusing to guess — the stop IS the thesis (close back below the reversal low kills it).' };
+    }
+    // Rule 6j volume leg, mechanized 2026-07-28. It was previously prose-only in SKILL.md,
+    // so a volume-failed Style-3 could still be planned by hand. Now the script decides.
+    // --vol-trial opts into the Rule 6j-A2 試行 path (report-only paper track, NOT a buy).
+    if (!scr.signals.volConfirmed) {
+      if (!opts.volTrial) {
+        return { code, error: `Style-3 requires 量 > 5日均量 (Rule 6j) — volRatio ${scr.volRatio ?? 'n/a'}×. Pass --vol-trial to plan this as a Rule 6j-A2 試行 paper track (report-only, 25% pilot, never a buy recommendation).` };
+      }
+      volTrial = true;
+      pilotPct = 25;
+    } else if (opts.volTrial) {
+      notes.push(`--vol-trial ignored — volume already confirms (${scr.volRatio}× > 1); this is a normal Style-3, not a 6j-A2 試行`);
     }
     const revStop = opts.revlow * 0.99, floorStop = bottom * 0.95;
     stop = Math.min(revStop, floorStop);
@@ -272,6 +418,10 @@ function tradePlan(db, code, opts) {
       ? `stop = just under reversal-day low ${opts.revlow} (${r1(revStop)})`
       : `reversal-low stop ${r1(revStop)} tighter than the 5% floor — widened to ${r1(floorStop)} (Rule 6a-1)`);
     notes.push('Style-3: pilot 50% ONLY; add only after the base top breaks out (then Style-2 rules take over); close < reversal low = out, no averaging (Rule 6b Style-3)');
+    if (volTrial) {
+      notes.push(`Rule 6j-A2 試行 (2026-07-28): 量 ${scr.volRatio}× ≤ 1× 5日均量 — 6j's 1.0× threshold showed no discriminative power across 3 samples (2:1 against), so this is TRACKED, not vetoed.`);
+      notes.push('6j-A2 試行: 報告用途，**不作買進建議**. Record a paper track (entry = this close, stop/TP as planned) in the analysis note; pilot is 25% (half the Style-3 50%) if the user promotes it. Promotion review after 3-5 tracked instances.');
+    }
   } else {
     // Rule 6a-1 Style-2: structural stop just under the pivot, honoring the 5% floor.
     // NEVER 2×ATR — mis-applying the pullback width was the 2026-07-03 paralysis bug.
@@ -292,11 +442,17 @@ function tradePlan(db, code, opts) {
   const rr = (target - mid) / oneR;
   const rrPass = rr >= 1.5;
 
+  const is3c = opts.style === 3 && opts.confirm;
   const out = {
     code, date: scr.date, close: scr.close, style: opts.style,
+    variant: is3c ? '3c' : (volTrial ? '3-volTrial' : null),
+    volTrial, pilotPct,
+    volRatio: scr.volRatio,
     zone: { bottom: lo, top: hi, mid: r1(mid) },
     pivot: opts.pivot ?? null,
-    revlow: opts.revlow ?? null,
+    revlow: is3c ? null : (opts.revlow ?? null),  // 3c ignores --revlow (noted above)
+    confirmLow: is3c ? scr.low : null,
+    reversalDate: is3c ? scr.continuation.reversalDate : null,
     atr14: scr.atr14, atrProvisional: scr.atrProvisional, atrHot: scr.atrHot,
     stop: r1(stop), stopPctBelowBottom: r2((bottom - stop) / bottom * 100),
     tp1: r1(tp1), tp2: r1(tp2), rewardTarget: r1(target),
@@ -305,10 +461,12 @@ function tradePlan(db, code, opts) {
   };
   if (opts.equity != null) {
     const shares = Math.floor((opts.equity * 0.01) / oneR);
+    const pilotShares = Math.floor(shares * pilotPct / 100);
     out.sizing = {
       equity: opts.equity, riskPerShare: r1(oneR), shares,
       riskDollars: r1(shares * oneR),
-      note: 'per-position 1% risk cap (6e-2); apply the 2% per-theme heat cap across correlated picks (6e-3)',
+      pilotPct, pilotShares, pilotRiskDollars: r1(pilotShares * oneR),
+      note: `per-position 1% risk cap (6e-2); first entry is the ${pilotPct}% pilot (6e-5${volTrial ? ', halved by the 6j-A2 試行' : ''}); apply the 2% per-theme heat cap across correlated picks (6e-3)`,
     };
   }
   out.gate = scr.gate; // carry the screen gate so one call shows both views
@@ -320,23 +478,28 @@ function tradePlan(db, code, opts) {
 function main() {
   const argv = process.argv.slice(2);
   const flag = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null; };
+  // Boolean flags take no value — the positional collector must NOT skip the next token
+  // after them (the old unconditional i++ silently dropped a code after --quote-ok).
+  const BOOL_FLAGS = new Set(['--quote-ok', '--events-known', '--confirm', '--vol-trial']);
   const codes = [];
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith('--')) { i++; continue; }
+    if (argv[i].startsWith('--')) { if (!BOOL_FLAGS.has(argv[i])) i++; continue; }
     codes.push(argv[i]);
   }
   if (!codes.length) {
     console.error('Usage: screen.mjs <code> [<code>...] [--date YYYY-MM-DD]                    # screening');
-    console.error('       screen.mjs <code> --style 1|2|3 --zone LO-HI [--pivot P] [--revlow L] [--target T] [--equity E]   # trade plan');
+    console.error('       screen.mjs <code> --style 1|2|3 --zone LO-HI [--pivot P] [--revlow L] [--confirm] [--vol-trial] [--target T] [--equity E]   # trade plan');
     process.exit(1);
   }
 
   const style = flag('--style') ? Number(flag('--style')) : null;
+  // Rule 6q judgment-input flags: presence = confirmed ('pass'); absence = unknown ('partial').
+  const gradeOpts = { quoteOk: argv.includes('--quote-ok'), eventsKnown: argv.includes('--events-known') };
   const db = openDb();
   try {
     if (style != null) {
       if (codes.length !== 1) { console.error('trade-plan mode takes exactly one code'); process.exit(1); }
-      if (style !== 1 && style !== 2 && style !== 3) { console.error('--style must be 1 (pullback), 2 (breakout), or 3 (reversal)'); process.exit(1); }
+      if (style !== 1 && style !== 2 && style !== 3) { console.error('--style must be 1 (pullback), 2 (breakout), or 3 (reversal; add --confirm for 3c delayed confirmation)'); process.exit(1); }
       const zoneRaw = flag('--zone');
       const m = zoneRaw && zoneRaw.match(/^([\d.]+)-([\d.]+)$/);
       if (!m) { console.error('--zone LO-HI is required for a trade plan (e.g. --zone 5940-6080)'); process.exit(1); }
@@ -345,9 +508,12 @@ function main() {
         style, zone,
         pivot: flag('--pivot') ? Number(flag('--pivot')) : null,
         revlow: flag('--revlow') ? Number(flag('--revlow')) : null,
+        confirm: argv.includes('--confirm'),
+        volTrial: argv.includes('--vol-trial'),
         target: flag('--target') ? Number(flag('--target')) : null,
         equity: flag('--equity') ? Number(flag('--equity')) : null,
         date: flag('--date'),
+        ...gradeOpts,
       });
       if (plan.error) { console.error(`${plan.code}: ${plan.error}`); process.exit(1); }
       console.log(JSON.stringify(plan, null, 2));
@@ -355,7 +521,7 @@ function main() {
       const date = flag('--date');
       let hadError = false;
       for (const code of codes) {
-        const res = screenCode(db, code, date);
+        const res = screenCode(db, code, date, gradeOpts);
         if (res.error) hadError = true;
         console.log(JSON.stringify(res));
       }
