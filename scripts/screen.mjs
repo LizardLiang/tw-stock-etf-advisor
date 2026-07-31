@@ -210,7 +210,31 @@ export function screenCode(db, code, dateOpt, gradeOpts) {
   const difPrev = idx > 0 ? difS[idx - 1] : null;
   const osc = (dif != null && macdSig != null) ? dif - macdSig : null;
 
-  const chgPct = prev ? (last.close - prev.close) / prev.close * 100 : null;
+  // ---- Rule 6i dividend restoration (mechanized 2026-07-31) ------------------------------
+  // The 7769 incident: 除息 64.99 on 2026-07-30 sat inside the decline segment, so the
+  // reclaim test compared an ex-div close against a cum-div anchor (6,110 vs the true
+  // 6,045.01) and chgPct read +8.60% where the exchange's own convention (vs 參考價) says
+  // +9.98%. Fix: all CLOSE-vs-CLOSE comparisons (up/down runs, decline segments, reclaim,
+  // chgPct) run on a dividend-restored series; price LEVELS (stops, zones, ATR, MA, KD/RSI —
+  // Histock parity) stay raw. Data: `dividends` table (TWSE full history; TPEx forward-only —
+  // absence of a row is NOT proof of no dividend, so treat as best-effort).
+  const divRows = db.prepare('SELECT exdate, amount FROM dividends WHERE code = ? ORDER BY exdate').all(code);
+  const cum = new Array(rows.length);
+  {
+    let di = 0, acc = 0;
+    for (let i = 0; i < rows.length; i++) {
+      while (di < divRows.length && divRows[di].exdate <= rows[i].date) { acc += divRows[di].amount; di++; }
+      cum[i] = acc;
+    }
+  }
+  const adjC = (i) => rows[i].close + cum[i];          // restores detached dividends for comparisons
+  const divEvents = divRows.filter(d => d.exdate > rows[Math.max(0, idx - 30)].date && d.exdate <= last.date)
+    .map(d => ({ exdate: d.exdate, amount: d.amount }));
+  const nextDivRow = divRows.find(d => d.exdate > last.date) ?? null;
+
+  // chgPct vs the exchange convention: on an ex-div day the denominator is the 參考價
+  // (prev close − dividend), which is exactly the adjusted-series comparison.
+  const chgPct = prev ? (adjC(idx) - adjC(idx - 1)) / (adjC(idx - 1) - cum[idx]) * 100 : null;
   const dev20 = ma20 ? (last.close - ma20) / ma20 * 100 : null;
 
   const kdGolden = k9 != null && kPrev != null && k9 > d9 && k9 > kPrev;
@@ -241,19 +265,27 @@ export function screenCode(db, code, dateOpt, gradeOpts) {
   // caused a mis-call on 2026-07-20 (an overlooked down-close halved the segment length).
   let reversal = null;
   if (idx >= 2) {
-    const isDown = i => i > 0 && rows[i].close < rows[i - 1].close;
+    // isDown on the DIVIDEND-RESTORED series (Rule 6i): a mechanical 除息 gap must not
+    // read as a down day, and the reclaim anchor must shed detached dividends.
+    const isDown = i => i > 0 && adjC(i) < adjC(i - 1);
     const isReversalDay = !isDown(idx);            // an up/flat close is the only reversal candidate
     // The run ends at today when today is still falling, otherwise at the bar before it.
     let end = isDown(idx) ? idx : idx - 1;
     let j = end;
     while (j > 0 && isDown(j)) j--;                // j lands on the bar BEFORE the run's first down bar
     const declineDays = end - j;
-    // Segment start = the close just before the first down bar of the run.
-    const declineStart = declineDays > 0 ? rows[j].close : null;
+    // Segment start, expressed in TODAY's price basis: the raw close at j minus dividends
+    // detached since (adjC(j) − cum[idx]). This is the level today's close must beat —
+    // quoting the raw close as the trigger overstates it by the dividend (7769: 6,110 vs
+    // the true 6,045.01). `declineStartRaw` keeps the historical close for display.
+    const declineStart = declineDays > 0 ? r2(adjC(j) - cum[idx]) : null;
+    const declineStartRaw = declineDays > 0 ? rows[j].close : null;
     reversal = {
       isReversalDay,
       declineDays,
       declineStart,
+      declineStartRaw,
+      divAdjusted: declineDays > 0 && declineStart !== declineStartRaw,
       // reclaimed only means something on a reversal day that actually follows a decline
       reclaimed: (isReversalDay && declineStart != null) ? last.close > declineStart : false,
       // how far the reclaim still has to go, as % of the current close
@@ -272,7 +304,8 @@ export function screenCode(db, code, dateOpt, gradeOpts) {
   // predicate: fresh needs yesterday DOWN, continuation needs yesterday NOT-down.
   let continuation = null;
   if (idx >= 3) {
-    const isDown = i => i > 0 && rows[i].close < rows[i - 1].close;
+    // Same dividend-restored comparisons as the reversal block (Rule 6i).
+    const isDown = i => i > 0 && adjC(i) < adjC(i - 1);
     // upRun = consecutive not-down closes ending today (today included). A flat close
     // counts as not-down for candidacy (matches the reversal block's convention), but a
     // flat close TODAY still fails closeAboveReversal below (strict >) — intentional.
@@ -283,7 +316,8 @@ export function screenCode(db, code, dateOpt, gradeOpts) {
     let dj = runStart;
     while (dj > 0 && isDown(dj)) dj--;             // dj lands on the bar BEFORE the decline run
     const cDeclineDays = runStart - dj;
-    const cDeclineStart = cDeclineDays > 0 ? rows[dj].close : null;
+    // Today's-basis anchor, same convention as reversal.declineStart
+    const cDeclineStart = cDeclineDays > 0 ? r2(adjC(dj) - cum[idx]) : null;
     // Window (D3): yesterday must be up-day 1 or 2 of the move → upRun ∈ {2,3} as of
     // today. upRun ≥ 4 = yesterday was up-day 3+ (late per 6b Style-3) → never qualifies.
     const windowOk = (upRun === 2 || upRun === 3) && cDeclineDays >= 1;
@@ -292,7 +326,8 @@ export function screenCode(db, code, dateOpt, gradeOpts) {
     const checks = {
       windowOk,
       kdGoldenYesterday,                                        // candidacy as-of idx−1
-      closeAboveReversal: last.close > rows[idx - 1].close,     // holds the reversal
+      // dividend-restored: an ex-div gap on the confirmation day must not fake a failure
+      closeAboveReversal: adjC(idx) > adjC(idx - 1),            // holds the reversal
       reclaimedNow: cDeclineStart != null && last.close > cDeclineStart,
       volConfirmed: volRatio != null && volRatio > 1,           // Rule 6j, same strict >
       kdGoldenToday: kdGolden,                                  // golden persists
@@ -343,6 +378,11 @@ export function screenCode(db, code, dateOpt, gradeOpts) {
     },
     reversal,
     continuation,
+    // Rule 6i context: dividends detached in the recent window (already folded into the
+    // reversal/continuation/chgPct comparisons above) and the next known ex-div date.
+    // TPEx caveat: history is forward-accumulated only — an empty list is not proof.
+    divEvents: divEvents.length ? divEvents : null,
+    nextDiv: nextDivRow ? { exdate: nextDivRow.exdate, amount: nextDivRow.amount } : null,
     gate: {
       style1: { pass: failures.length === 0, failures },
       style2Partial: {
@@ -455,6 +495,7 @@ export function tradePlan(db, code, opts) {
   const notes = [];
   let stop;
   let volTrial = false;          // Rule 6j-A2 試行 (2026-07-28) — set only on the Style-3 trial path
+  let reclaimTrial = false;      // Rule 6b-R1 reclaim 試行 (2026-07-31) — auto-detected on Style-3
   let pilotPct = 50;             // Rule 6e-5: first entry is always a 50% pilot; A2 halves it again
 
   if (opts.style === 1) {
@@ -517,6 +558,24 @@ export function tradePlan(db, code, opts) {
       notes.push(`Rule 6j-A2 試行 (2026-07-28): 量 ${scr.volRatio}× ≤ 1× 5日均量 — 6j's 1.0× threshold showed no discriminative power across 3 samples (2:1 against), so this is TRACKED, not vetoed.`);
       notes.push('6j-A2 試行: 報告用途，**不作買進建議**. Record a paper track (entry = this close, stop/TP as planned) in the analysis note; pilot is 25% (half the Style-3 50%) if the user promotes it. Promotion review after 3-5 tracked instances.');
     }
+    // Rule 6b-R1 reclaim 試行 (pre-registered + user-approved 2026-07-31): a reversal day
+    // whose ONLY failed Style-3 leg is the reclaim test is TRACKED, not vetoed. Evidence:
+    // 4 samples (2 exploratory + 2 frozen OOS) all show the not-reclaimed group with HIGHER
+    // avgR and LOWER stop rate (OOS-A +0.163 vs +0.092; OOS-B +0.219 vs +0.120); proxy
+    // fidelity 100%/99.7%. Report-only until the user promotes it — never a buy.
+    // A candidate that failed BOTH volume and reclaim is a dual-failure: it belongs to
+    // NEITHER trial's clean sample (each trial isolates one leg) — tagged in notes only.
+    const rev = scr.reversal;
+    if (rev?.isReversalDay && rev.declineStart != null && !rev.reclaimed) {
+      if (volTrial) {
+        notes.push('⚠️ 雙敗樣本：reclaim 亦未過 — 非乾淨 6j-A2 樣本，亦非 reclaim-試行樣本（各試行隔離單一敗項）；僅記錄，不入任一追蹤表');
+      } else {
+        reclaimTrial = true;
+        pilotPct = 25;
+        notes.push(`Rule 6b-R1 reclaim-試行 (2026-07-31): 收復未過（收 ${scr.close} < 跌段起點 ${rev.declineStart}，差 ${rev.reclaimGapPct}%）— 預先登記實驗 H1-H3 於兩 OOS 樣本全過，被擋組 avgR 較高且停損率較低，故 TRACKED, not vetoed.`);
+        notes.push('reclaim-試行: 報告用途，**不作買進建議**. Record a paper track (entry = this close, stop/TP as planned); pilot is 25% if promoted. Promotion review after 3-5 tracked instances — see experiments/reclaim-preregistration.md.');
+      }
+    }
   } else {
     // Rule 6a-1 Style-2: structural stop just under the pivot, honoring the 5% floor.
     // NEVER 2×ATR — mis-applying the pullback width was the 2026-07-03 paralysis bug.
@@ -532,24 +591,36 @@ export function tradePlan(db, code, opts) {
 
   const oneR = mid - stop;
   const tp1 = mid * 1.08, tp2 = mid * 1.15;
-  const target = opts.target ?? tp2;
-  if (opts.target == null) notes.push('reward target defaulted to TP2 (+15%); pass --target for a measured-move/prior-high target');
+  // Rule 7d, mechanized 2026-07-31 (audit finding): the reward target is TP2 or the
+  // structural measured-move, WHICHEVER IS HIGHER — 7d's own text. The prior habit of
+  // taking the NEAREST structural high made R:R unpassable by construction (a 5%-floor
+  // stop needs a target ≥ +7.5% from mid; 2330 7/31: nearest 2,500 → rr 0.52 vs TP2 2.34),
+  // and every backtest that validated the R:R gate measured it against TP2. A dominated
+  // structural target is demoted to a TP0/near-resistance reference, not the reward leg.
+  const structuralTarget = opts.target ?? null;
+  const structDominated = structuralTarget != null && structuralTarget < tp2;
+  const target = structuralTarget != null ? Math.max(structuralTarget, tp2) : tp2;
+  if (structuralTarget == null) notes.push('reward target defaulted to TP2 (+15%); pass --target for a measured-move/prior-high target');
+  else if (structDominated) notes.push(`結構目標 ${structuralTarget} < TP2 ${r1(tp2)} → 依 7d 擇高，reward target 取 TP2；結構位降列近程壓力/TP0 參考（2026-07-31 稽核：nearest-target 使 R:R 先天無解）`);
   const rr = (target - mid) / oneR;
   const rrPass = rr >= 1.5;
 
   // Use the REPORTED (rounded) stop, not the raw one: a reader must be able to reproduce
   // maxEntryForRR from the numbers printed in this same object.
+  // A dominated structural target is NOT passed down: authorisedEntry's null-target branch
+  // prices the ceiling off entry×1.15 (entry-consistent TP2), matching the reward leg above.
   const market = marketForCode(code);
   const entryAuthorised = authorisedEntry({
-    style: opts.style, stop: r1(stop), target: opts.target, bottom, close: scr.close,
+    style: opts.style, stop: r1(stop), target: structDominated ? null : structuralTarget,
+    bottom, close: scr.close,
     pivot: opts.pivot, breakoutPct: opts.breakoutPct ?? 3, market,
   });
 
   const is3c = opts.style === 3 && opts.confirm;
   const out = {
     code, market, date: scr.date, close: scr.close, style: opts.style,
-    variant: is3c ? '3c' : (volTrial ? '3-volTrial' : null),
-    volTrial, pilotPct,
+    variant: is3c ? '3c' : (volTrial ? '3-volTrial' : (reclaimTrial ? '3-reclaimTrial' : null)),
+    volTrial, reclaimTrial, pilotPct,
     volRatio: scr.volRatio,
     zone: { bottom: lo, top: hi, mid: r1(mid) },
     pivot: opts.pivot ?? null,
@@ -559,6 +630,7 @@ export function tradePlan(db, code, opts) {
     atr14: scr.atr14, atrProvisional: scr.atrProvisional, atrHot: scr.atrHot,
     stop: r1(stop), stopPctBelowBottom: r2((bottom - stop) / bottom * 100),
     tp1: r1(tp1), tp2: r1(tp2), rewardTarget: r1(target),
+    structuralTarget,                       // as passed; < TP2 ⇒ demoted to TP0/near-resistance
     oneR: r1(oneR), rr: r2(rr), rrPass,
     entryAuthorised,
     notes,

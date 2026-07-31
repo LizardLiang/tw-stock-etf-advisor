@@ -503,6 +503,33 @@ emits `market` in its JSON; read it back.
    1.0–1.5×), contradicting 6b Style-3's「≥ 1.5× strengthens it」. Do **not** change 6b on
    this basis. Harness + pre-registrations: `personal/stocks/experiments/`.
 
+   **6b-R1. reclaim 條件試行觀察期 (TRIAL — added 2026-07-31, user-approved).**
+   The Style-3「收復跌段起點」condition was the ONLY Style-3 leg never isolated in a
+   backtest (every harness baked `reclaimed` into `pass`). The pre-registered experiment
+   (`experiments/reclaim-preregistration.md`) passed all three frozen hypotheses in BOTH
+   adjudicating samples — the blocked group had HIGHER avgR and LOWER stop rate:
+
+   | 樣本 | reclaimed（放行）| notReclaimed（被擋）|
+   |---|---|---|
+   | OOS-A 150 檔 2018–2023 | +0.092R / 停損 56.2% | **+0.163R** / 55.1% |
+   | OOS-B 300 檔含上櫃 3 年 | +0.120R / 52.8% | **+0.219R** / 49.5% |
+
+   Proxy fidelity 100%/99.7% (2,145 pairs). 4 samples total (2 exploratory + 2 frozen),
+   all same direction, no sign flip.
+
+   Rule: a reversal day that passes every other Style-3 leg (KD golden, volume, RSI,
+   base judgment) and fails **only** the reclaim test is **TRACKED, not vetoed** — run
+   `screen.mjs <code> --style 3 --revlow L --zone …` (the script auto-tags
+   `reclaimTrial: true`, `variant: '3-reclaimTrial'`, `pilotPct: 25`) and record a
+   **paper track** in `Eliot/Notes/2026/reclaim-trial-tracker.md`. Report it as
+   「**reclaim-試行成立（試行，不作買進建議）**」— never as 進場條件成立, never in the
+   buy list. **Promotion review after 3–5 tracked instances** — the user decides 轉正
+   or 作廢. Scope: plain Style-3 only (Style-3c untouched — its `reclaimedNow` check
+   stays; it is its own trial). A candidate failing BOTH volume and reclaim is a
+   dual-failure belonging to NEITHER trial's clean sample (the script flags it).
+   The reclaim fields (`reversal.declineStart` etc.) keep being computed and reported —
+   the trial changes the CONSEQUENCE of `reclaimed: false`, not the measurement.
+
    **6l. Trigger validity band — a late-firing trigger is a rewrite, not a buy
    (added 2026-07-08).** Every watchlist trigger condition MUST state a validity
    band: the anchor level up to **+2%** (Style-2 breakout triggers: the pivot up to
@@ -710,13 +737,14 @@ emits `market` in its JSON; read it back.
    | 6b Style-3 reclaim test | decline segment + reclaim | `screen.mjs` → `reversal.{declineDays,declineStart,reclaimed,reclaimGapPct}` | read (absent → do not assert it passed) |
    | 6b Style-3c delayed-confirmation gate **(NEW)** | yesterday's day-1/2 candidacy + the 7 confirmation-day checks | `screen.mjs` → `continuation.{qualified,checks,failures[]}` | read (absent → do not assert it passed) |
    | 6d staged take-profit | TP1/TP2 prices | `screen.mjs` trade-plan → `tp1`/`tp2` | read |
-   | step 7 / "Rule 7" R:R (to reward target, not TP1) | 1R, R:R, pass/fail | `screen.mjs` trade-plan → `oneR`/`rr`/`rrPass` | read |
+   | step 7 / "Rule 7" R:R (to reward target, not TP1) | 1R, R:R, pass/fail, **reward-target selection = max(結構目標, TP2)** (2026-07-31 audit: the nearest-structure habit made the gate unpassable by construction — a 5%-floor stop needs a target ≥ mid+7.5%; 2330 nearest 0.52 vs TP2 2.34 — while every backtest validated the gate against TP2. A dominated structural target demotes to TP0/近程壓力.) | `screen.mjs` trade-plan → `oneR`/`rr`/`rrPass`/`rewardTarget`/`structuralTarget` | read (supplies `--target`; never re-judges rr against a dominated near target) |
    | 6e-2 per-position 1% sizing | share count from stop distance | `screen.mjs` trade-plan → `sizing.shares`/`sizing.riskDollars` | read |
    | 6e-3 per-theme heat cap **(NEW)** | combined theme risk %, scaled sizing | `rules.mjs heat` → `themeHeatPct`/`overCap`/`legs[].sharesAtCap` | read |
    | 6e-4 theme-level stop **(NEW)** | combined unrealized %, tier, weakest leg | `positions.mjs theme-stop` → `unrealizedPct`/`tier`/`action`/`weakestLeg` | read |
    | 6h earnings blackout **(NEW)** | trading-day count to event | `rules.mjs earnings` → `tradingDaysAway`/`blackout`/`coverageVerified`/`warning?` | read (supplies `--event`/`--from`); **`coverageVerified: false` + `tradingDaysAway <= 7` ⇒ treat as blackout** unless `--sync-holidays` verifies — see 6h |
    | 6j volume confirmation | volume vs 5-day average | `screen.mjs` → `volRatio`/`signals.volConfirmed`/`signals.volStrong`; Style-3 trade plans hard-error when unconfirmed | read |
    | 6j-A2 量能試行 **(NEW)** | trial flag + 25% pilot split | `screen.mjs --style 3 --vol-trial` → `volTrial`/`variant`/`pilotPct`/`sizing.pilotShares` | read (report-only during the trial; never a buy) |
+   | 6b-R1 reclaim 試行 **(NEW 2026-07-31)** | auto trial tag on a reversal day failing only reclaim + 25% pilot | `screen.mjs --style 3` → `reclaimTrial`/`variant`/`pilotPct` (auto-detected, no flag) | read (report-only during the trial; never a buy; dual vol+reclaim failure = neither trial) |
    | 6e-5 pilot fraction **(NEW)** | pilot % and pilot share count | `screen.mjs` trade-plan → `pilotPct`/`sizing.pilotShares`/`sizing.pilotRiskDollars` | read (never hand-halve a position) |
    | 6l trigger validity band **(NEW)** | band edges, late-fire excess % | `rules.mjs band` → `bandLo`/`bandHi`/`fired`/`lateFire`/`excessPct` | read |
    | 6l-1 authorised entry set **(NEW)** | band ∩ R:R ceiling, tick-aligned | `screen.mjs` trade-plan → `entryAuthorised.{band,maxEntryForRR,tick,lo,hi,singlePoint,empty,binding,notes[]}` | read — **quote `lo`/`hi` as the buy zone, never the band alone**; `empty:true` = not a buy at any price; `singlePoint:true` = say 「唯一合法進場價 X」, never widen it |
@@ -738,7 +766,7 @@ emits `market` in its JSON; read it back.
    | 6f market condition gate (TAIEX vs 50/200MA for tw; S&P 500 vs 50/200MA for us) | — | model judgment (pending a future network delta — explicitly out of scope for rule-math-mechanization) | applies the gate by hand from a fetched index quote/MA until mechanized; per-market index, never cross-applied |
    | 6g buy-zone anchor (which technical level) | — | model judgment | the chosen level becomes `rules.mjs band`'s `--anchor` |
    | 6h/6i event-date discovery (next 財報/除權息 date) | — | model judgment | the discovered date becomes `rules.mjs earnings`'s `--event` |
-   | 6i ex-dividend adjustment (restore dividend before judging support) | — | model judgment (unmechanized this delta) | — |
+   | 6i ex-dividend adjustment (restore dividend in close-vs-close comparisons) **(mechanized 2026-07-31** — the 7769 64.99 incident: reclaim compared an ex-div close to a cum-div anchor) | dividend-restored up/down runs, decline segments, reclaim anchors, chgPct (vs 參考價, exchange convention) | `screen.mjs` → `reversal.{declineStart,declineStartRaw,divAdjusted}`/`divEvents`/`nextDiv`; data via `fetch-dividends.mjs` (TWSE full history; TPEx forward-window only — absence of a row is NOT proof of no dividend) | read (stop-adjustment for HELD positions and 除息日 sell-signal interpretation stay judgment) |
    | 6n execute-or-re-underwrite decision | — | model + user judgment | `breach-check`'s `forcedBinary` only flags WHEN a decision is due, never which branch |
    | 6o assumption status (🟢/🟡/🔴/⚫) + red-line triggered/not | — | model judgment | becomes `rules.mjs thesis`'s `--json` input |
    | 6p mirror test (5 sentences) | — | model judgment (narrative) | sentences 2/4/5 quote other rules' script fields verbatim, no hand-math |
@@ -909,6 +937,15 @@ catches what no index committee picked).
      「6j-A2 成立（試行，不作買進建議）」, and append a paper track to
      `Eliot/Notes/2026/6j-a2-trial-tracker.md`. Zero instances is a normal, reportable
      result — never manufacture one. Update the open tracks' outcomes each session.
+   - **6b-R1 reclaim 試行掃描 (every session, added 2026-07-31)**: flag any stock where
+     `reversal.isReversalDay && reversal.declineStart != null && !reversal.reclaimed &&
+     signals.volConfirmed` AND the remaining Style-3 legs pass (KD golden, RSI ≤ 80,
+     base judgment) — a Style-3 whose *only* failure is the reclaim leg. Each is a
+     **試行實例**: run `screen.mjs --style 3 --revlow L --zone …` (auto-tags
+     `reclaimTrial`), report it as 「reclaim-試行成立（試行，不作買進建議）」, and append
+     a paper track to `Eliot/Notes/2026/reclaim-trial-tracker.md`. Same discipline:
+     zero instances is normal; dual vol+reclaim failures belong to neither trial;
+     update open tracks' outcomes each session.
 
    **For held stocks**: compare live price against recorded 停損 and 停利. If any
    holding has breached its stop (live ≤ 停損), flag it as **持股警報** and present

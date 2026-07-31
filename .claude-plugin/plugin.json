@@ -1,7 +1,7 @@
 {
   "name": "tw-stock-etf-advisor",
   "displayName": "Taiwan Stock & ETF Advisor",
-  "version": "1.20.1",
+  "version": "1.21.0",
   "description": "Taiwan AND US stock/ETF research, buy-sell decisions, personal holdings tracking, and K-line charting — two separate books (TWD/USD, no FX), two separate reports. Finds common holdings between ETFs (e.g. 0050 / 0052), scans the whole Taiwan market (上市+上櫃, ~1,900 stocks from official TWSE/TPEx JSON) for opportunities beyond ETF constituents — 量價突擊 / 投信連買 / 營收YoY behind a liquidity floor — and covers 美股 via QQQ / S&P 500 top holdings plus any ticker you name (Yahoo v8 JSON history, NYSE-calendar earnings blackout, US$20M liquidity floor, $0.01 tick). Recommends what to buy and why with an entry/exit plan from a live quote, records the trades you make into per-market ledgers, reviews your holdings as separate 台股/美股 reports, and draws a standalone Tokyo-Night candlestick chart that marks why each buy/sell/hold happened — market-aware colors (TW 紅漲綠跌, US 綠漲紅跌), forward ⚑ signal lines, and a post-mortem review panel logging every decision (status, condition, outcome). Persists price history + decision markers in a local SQLite DB with market-scoped trading calendars. Trade discipline built in: per-position thesis notes with falsifiable assumptions, red lines and a health score re-scored on every review; a 5-sentence mirror-test entry gate; move attribution (價值事件/情緒/原因不明) on big swings; A/B/C data-richness rating with an honest 資料不足 verdict; and cross-source deviation checks against primary sources. Always fetches live data via agent-browser or documented JSON endpoints; never guesses or derives prices.",
   "author": {
     "name": "LizardLiang",

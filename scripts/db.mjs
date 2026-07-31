@@ -130,6 +130,19 @@ export function initSchema(db) {
       value   INTEGER,                    -- NTD traded (liquidity floor input, Rule 6q check 5)
       PRIMARY KEY (code, date)
     );
+    -- Ex-dividend events (Rule 6i, mechanized 2026-07-31 after the 7769 64.99 incident:
+    -- screen.mjs's decline-segment/reclaim comparisons crossed an ex-div boundary unadjusted).
+    -- TWSE: full history via TWT49U (source='twse'). TPEx: the only JSON endpoint is a
+    -- forward-looking 預告 window, so rows accumulate as they appear (source='tpex-forward')
+    -- — historical TPEx gaps are a documented limitation, surfaced per-code by screen.mjs.
+    CREATE TABLE IF NOT EXISTS dividends (
+      code   TEXT NOT NULL,
+      exdate TEXT NOT NULL,               -- ISO ex-dividend trading date
+      amount REAL NOT NULL,               -- 權值+息值 (price detached at the open of exdate)
+      kind   TEXT,                        -- '息' | '權' | '權息'
+      source TEXT,                        -- 'twse' | 'tpex-forward'
+      PRIMARY KEY (code, exdate)
+    );
     -- Per-stock 三大法人 daily nets (scan.mjs). Shares; positive = net buy.
     CREATE TABLE IF NOT EXISTS inst_flows (
       code        TEXT NOT NULL,

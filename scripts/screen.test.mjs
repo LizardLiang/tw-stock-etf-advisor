@@ -528,3 +528,158 @@ test('tradePlan (TW regression): numeric codes still report TWD and the TW tick 
   assert.equal(p.sizing.equityCurrency, 'TWD');
   assert.equal(p.entryAuthorised.tick, tickSize(98)); // the ladder, not 0.01
 });
+
+// ---- Rule 6i dividend restoration (2026-07-31 fix — the 7769 64.99 incident) -------------
+//
+// 7769-shape: decline 6110 → 5750 → 5175, then 除息 64.99 detaches on the reversal day.
+// Before the fix the reclaim anchor read 6110 (raw); the true today's-basis anchor is
+// 6110 − 64.99 = 6045.01, and chgPct must follow the exchange's vs-參考價 convention.
+
+test('6i: declineStart sheds dividends detached inside the segment (7769-shape)', () => {
+  const code = 'DIVREV';
+  const rows = [
+    ['2026-07-23', 6050], ['2026-07-24', 6055], ['2026-07-27', 6110],
+    ['2026-07-28', 5750], ['2026-07-29', 5175], ['2026-07-30', 5620],
+  ];
+  for (const [date, close] of rows) {
+    upsertOhlc(db, code, { date, open: close, high: close + 10, low: close - 10, close, volume: 10_000_000 });
+  }
+  db.prepare(`INSERT OR REPLACE INTO dividends(code,exdate,amount,kind,source) VALUES(?,?,?,?,?)`)
+    .run(code, '2026-07-30', 64.99, '息', 'twse');
+  const r = screenCode(db, code, '2026-07-30');
+  assert.equal(r.reversal.isReversalDay, true);
+  assert.equal(r.reversal.declineDays, 2);
+  assert.equal(r.reversal.declineStartRaw, 6110);
+  assert.equal(r.reversal.declineStart, 6045.01);         // 6110 − 64.99, today's basis
+  assert.equal(r.reversal.divAdjusted, true);
+  assert.equal(r.reversal.reclaimed, false);              // 5620 < 6045.01 still
+  // chgPct vs 參考價 (5175 − 64.99 = 5110.01): (5620−5110.01)/5110.01 = +9.98%
+  assert.equal(r.chgPct, 9.98);
+  assert.deepEqual(r.divEvents, [{ exdate: '2026-07-30', amount: 64.99 }]);
+});
+
+test('6i: a dividend can flip reclaimed — raw close below raw anchor but above the true one', () => {
+  const code = 'DIVFLIP';
+  // decline start 100; dividend 3 detaches on the reversal day; close 98.5:
+  // raw 98.5 < 100 (not reclaimed) but adjusted anchor is 97 → reclaimed.
+  const rows = [
+    ['2026-07-23', 99.5], ['2026-07-24', 99.8], ['2026-07-27', 100],
+    ['2026-07-28', 97], ['2026-07-29', 95], ['2026-07-30', 98.5],
+  ];
+  for (const [date, close] of rows) {
+    upsertOhlc(db, code, { date, open: close, high: close + 1, low: close - 1, close, volume: 10_000_000 });
+  }
+  db.prepare(`INSERT OR REPLACE INTO dividends(code,exdate,amount,kind,source) VALUES(?,?,?,?,?)`)
+    .run(code, '2026-07-30', 3, '息', 'twse');
+  const r = screenCode(db, code, '2026-07-30');
+  assert.equal(r.reversal.declineStart, 97);              // 100 − 3
+  assert.equal(r.reversal.reclaimed, true);               // 98.5 > 97
+});
+
+test('6i: a mechanical ex-div gap does not read as a down day (isDown on restored series)', () => {
+  const code = 'DIVDOWN';
+  // Flat tape at 100, then a 5-point dividend detaches and the stock "drops" to 96 —
+  // restored close 96+5=101 > 100 ⇒ an UP day, so no decline segment starts here.
+  const rows = [
+    ['2026-07-24', 99.8], ['2026-07-27', 99.9], ['2026-07-28', 100],
+    ['2026-07-29', 96], ['2026-07-30', 96.5],
+  ];
+  for (const [date, close] of rows) {
+    upsertOhlc(db, code, { date, open: close, high: close + 1, low: close - 1, close, volume: 10_000_000 });
+  }
+  db.prepare(`INSERT OR REPLACE INTO dividends(code,exdate,amount,kind,source) VALUES(?,?,?,?,?)`)
+    .run(code, '2026-07-29', 5, '息', 'twse');
+  const r = screenCode(db, code, '2026-07-29');
+  // 96 raw looks like −4% but restored it is +1: chgPct = (96 − 95)/95 = +1.05%
+  assert.equal(r.chgPct, 1.05);
+  assert.equal(r.reversal.isReversalDay, true);           // up day on the restored series
+});
+
+// ---- Rule 7d reward-target selection (2026-07-31 audit fix) ------------------------------
+//
+// 2330-shape: nearest structural high sits below TP2 → rr must be judged against TP2 and
+// the structural target demoted, or the gate is mathematically unpassable (audit finding:
+// with a 5%-floor stop, any target < mid+7.5% can never reach R:R 1.5 at any price).
+
+test('7d: structural target below TP2 is dominated — rr uses TP2, plan not auto-vetoed', () => {
+  seedFlatHistory(db, 'TGTMAX', 74, '2026-07-20', { volume: 20_000_000 });
+  // zone 100-102 (mid 101), Style-2 pivot 100 → stop = min(99, 95) = 95, oneR = 6
+  // structural target 105 (< TP2 116.2): old rr = 4/6 = 0.67 FAIL; new rr = (116.15−101)/6 ≈ 2.52
+  const p = tradePlan(db, 'TGTMAX', { style: 2, pivot: 100, zone: [100, 102], target: 105 });
+  assert.ok(!p.error, p.error);
+  assert.equal(p.structuralTarget, 105);
+  assert.equal(p.rewardTarget, p.tp2);                    // TP2 won the max()
+  assert.ok(p.rr >= 1.5, `rr ${p.rr} should pass judged against TP2`);
+  assert.ok(p.rrPass);
+  assert.ok(p.notes.some(n => n.includes('擇高')), 'demotion note missing');
+  // authorisedEntry must NOT be empty purely because of a dominated near target
+  assert.equal(p.entryAuthorised.empty, false);
+});
+
+test('7d: structural target above TP2 still wins the max() (regression)', () => {
+  seedFlatHistory(db, 'TGTBIG', 74, '2026-07-20', { volume: 20_000_000 });
+  const p = tradePlan(db, 'TGTBIG', { style: 2, pivot: 100, zone: [100, 102], target: 130 });
+  assert.ok(!p.error, p.error);
+  assert.equal(p.rewardTarget, 130);                      // structural target kept
+  assert.ok(p.notes.every(n => !n.includes('擇高')));
+});
+
+// ---- Rule 6b-R1 reclaim 試行 (2026-07-31, pre-registered + user-approved) ----------------
+
+test('6b-R1: reversal day failing ONLY reclaim tags a reclaim-trial plan (25% pilot, report-only)', () => {
+  const code = 'RTRIAL';
+  // decline 110→104→100, reversal day closes 103 (< declineStart 110) on confirming volume
+  const rows = [
+    ['2026-07-16', 106, 4_000_000], ['2026-07-17', 106.5, 4_000_000], ['2026-07-20', 107, 4_000_000],
+    ['2026-07-21', 107.2, 4_000_000], ['2026-07-22', 107.5, 4_000_000], ['2026-07-23', 107.8, 4_000_000],
+    ['2026-07-24', 108, 4_000_000], ['2026-07-25', 110, 4_000_000], ['2026-07-28', 104, 4_000_000],
+    ['2026-07-29', 100, 4_000_000], ['2026-07-30', 103, 9_000_000],
+  ];
+  for (const [date, close, volume] of rows) {
+    upsertOhlc(db, code, { date, open: close, high: close + 1, low: close - 2, close, volume });
+  }
+  const p = tradePlan(db, code, { style: 3, revlow: 101, zone: [103, 104.03] });
+  assert.ok(!p.error, p.error);
+  assert.equal(p.reclaimTrial, true);
+  assert.equal(p.variant, '3-reclaimTrial');
+  assert.equal(p.pilotPct, 25);
+  assert.ok(p.notes.some(n => n.includes('不作買進建議')), 'report-only disclaimer missing');
+});
+
+test('6b-R1: a reclaimed reversal day stays a NORMAL Style-3 (no trial tag, 50% pilot)', () => {
+  const code = 'RNORM';
+  // decline 104→100, reversal day closes 105 > declineStart 104 → reclaimed
+  const rows = [
+    ['2026-07-18', 102, 4_000_000], ['2026-07-21', 102.5, 4_000_000], ['2026-07-22', 102.8, 4_000_000],
+    ['2026-07-23', 103, 4_000_000], ['2026-07-24', 103.2, 4_000_000],
+    ['2026-07-25', 103.5, 4_000_000], ['2026-07-28', 104, 4_000_000],
+    ['2026-07-29', 100, 4_000_000], ['2026-07-30', 105, 9_000_000],
+  ];
+  for (const [date, close, volume] of rows) {
+    upsertOhlc(db, code, { date, open: close, high: close + 1, low: close - 2, close, volume });
+  }
+  const p = tradePlan(db, code, { style: 3, revlow: 103, zone: [105, 106.05] });
+  assert.ok(!p.error, p.error);
+  assert.equal(p.reclaimTrial, false);
+  assert.equal(p.variant, null);
+  assert.equal(p.pilotPct, 50);
+});
+
+test('6b-R1: volume+reclaim dual failure is neither trial — flagged, stays 6j-A2 variant', () => {
+  const code = 'RDUAL';
+  // decline 110→104→100, reversal day closes 103 on WEAK volume (0.5×)
+  const rows = [
+    ['2026-07-16', 106, 8_000_000], ['2026-07-17', 106.5, 8_000_000], ['2026-07-20', 107, 8_000_000],
+    ['2026-07-21', 107.2, 8_000_000], ['2026-07-22', 107.5, 8_000_000], ['2026-07-23', 107.8, 8_000_000],
+    ['2026-07-24', 108, 8_000_000], ['2026-07-25', 110, 8_000_000], ['2026-07-28', 104, 8_000_000],
+    ['2026-07-29', 100, 8_000_000], ['2026-07-30', 103, 4_000_000],
+  ];
+  for (const [date, close, volume] of rows) {
+    upsertOhlc(db, code, { date, open: close, high: close + 1, low: close - 2, close, volume });
+  }
+  const p = tradePlan(db, code, { style: 3, revlow: 101, zone: [103, 104.03], volTrial: true });
+  assert.ok(!p.error, p.error);
+  assert.equal(p.variant, '3-volTrial');            // vol-trial keeps its variant
+  assert.equal(p.reclaimTrial, false);              // NOT a clean reclaim-trial sample
+  assert.ok(p.notes.some(n => n.includes('雙敗樣本')), 'dual-failure flag missing');
+});

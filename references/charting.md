@@ -268,6 +268,12 @@ node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3 --zone LO-HI 
   hard-error policy. Pilot 50% only; close < revlow = out. **Also hard-errors when
   量 ≤ 5日均量 (Rule 6j, script-enforced since 2026-07-28)** — the error names the ratio and
   points at `--vol-trial`.
+- `--style 3` auto-detects the **Rule 6b-R1 reclaim 試行** (added 2026-07-31, no flag): a
+  reversal day with a decline segment whose reclaim failed (and volume confirmed) tags
+  `reclaimTrial: true`, `variant: '3-reclaimTrial'`, `pilotPct: 25` — **report-only paper
+  track, never a buy** (pre-registered evidence: both frozen OOS samples show the blocked
+  group with higher avgR and lower stop rate; `experiments/reclaim-preregistration.md`).
+  A vol+reclaim dual failure is flagged in notes and belongs to neither trial.
 - `--style 3 --vol-trial` (Rule 6j-A2 試行, added 2026-07-28): plans a volume-failed Style-3 as a
   **report-only paper track** — `volTrial: true`, `variant: '3-volTrial'`, `pilotPct: 25`.
   Rationale: 6j's 1.0× threshold showed no discriminative power across 3 pre-registered samples
@@ -281,7 +287,21 @@ node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3 --zone LO-HI 
   qualification (the error names the failed checks). Pilot 50% only; close below the
   confirmation-day low = out. **試行觀察期**: until the user promotes 3c, a qualified day
   is report-only (紙上追蹤) — see SKILL.md 6b Style-3c trial clause.
-- `--target`: measured-move / prior-high reward target; defaults to TP2 (+15% from zone mid)
+- `--target`: measured-move / prior-high structural target. **The reward leg is
+  `max(--target, TP2)` (Rule 7d, mechanized 2026-07-31)** — a structural target below TP2 is
+  demoted to TP0/近程壓力 (read `structuralTarget` vs `rewardTarget`); rr judged against a
+  nearest-structure target was mathematically unpassable with 5%-floor stops (the audit's
+  「授權集合為空」 driver) and was never what the backtests validated. Omitting `--target`
+  still defaults to TP2.
+- **Rule 6i dividend restoration (2026-07-31)**: `screenCode` runs all close-vs-close
+  comparisons (up/down runs, decline segments, reclaim anchors, `chgPct` — now the exchange's
+  vs-參考價 convention) on a dividend-restored series from the `dividends` table. Price
+  LEVELS (stops, zones, ATR, MA, KD/RSI — Histock parity) stay raw. New fields:
+  `reversal.declineStart` is **today's-basis** (dividends shed), `declineStartRaw` the
+  historical close, `divAdjusted`, `divEvents`, `nextDiv`. Sync data with
+  `node --experimental-sqlite scripts/fetch-dividends.mjs --months 4` (TWSE TWT49U full
+  history, market-wide; TPEx is a forward 預告 window only — rows accumulate on daily runs,
+  and an absent row is NOT proof of no dividend).
 - `--equity`: account equity → `sizing.shares = floor(equity×1% / 1R)` (Rule 6e-2; apply the
   2% per-theme heat cap manually across correlated picks, Rule 6e-3). Also returns
   `sizing.pilotShares = floor(shares × pilotPct/100)` — the Rule 6e-5 first entry (50%, or 25%
