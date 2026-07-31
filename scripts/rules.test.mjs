@@ -307,6 +307,51 @@ test('deviate: a=0 and b=0 together is genuine agreement, still ok', () => {
   assert.equal(r.verdict, 'ok');
 });
 
+// ---- US delta: market-scoped quote bound + NYSE calendar --------------------------------------
+
+test('deviate (US): quote-vs-close bound is 20% — a 15% earnings gap is real, not a bad fetch', () => {
+  const ok = deviate({ a: 115, b: 100, kind: 'quote-vs-close', market: 'us' });
+  assert.equal(ok.verdict, 'ok');
+  assert.equal(ok.threshold.refetch, 20);
+  const bad = deviate({ a: 125, b: 100, kind: 'quote-vs-close', market: 'us' });
+  assert.equal(bad.verdict, 'refetch');
+});
+
+test('deviate (US regression): TW keeps its 10% 漲跌停 bound unchanged', () => {
+  const r = deviate({ a: 112, b: 100, kind: 'quote-vs-close' });
+  assert.equal(r.verdict, 'refetch');
+  assert.equal(r.threshold.refetch, 10);
+});
+
+test('deviate: unknown market is a house {error}', () => {
+  assert.ok(deviate({ a: 100, b: 100, kind: 'quote-vs-close', market: 'jp' }).error);
+});
+
+test('earnings (US): counts NYSE trading days — 2026-07-03 (July-4 observed) is crossed, not counted', () => {
+  // 6/30 -> 7/8: weekdays are 7/1,2,3,6,7,8; 7/3 is the builtin NYSE holiday; 7/4-5 weekend.
+  const r = earnings(db, { event: '2026-07-08', from: '2026-06-30', market: 'us' });
+  assert.equal(r.tradingDaysAway, 5, '7/1,2,6,7,8 — five NYSE sessions');
+  assert.ok(r.holidaysCrossed.includes('2026-07-03'));
+  assert.equal(r.blackout, true); // exactly 5 ≤ 5
+});
+
+test('earnings (US): coverage is NOT verified without US ohlc — warning names the SPY seed', () => {
+  // This test DB has only TW (9999) ohlc rows — the US-scoped span is empty, so nothing US
+  // is verified, and the TW span/synced-years must never leak in.
+  const r = earnings(db, { event: '2026-07-08', from: '2026-06-30', market: 'us' });
+  assert.equal(r.coverageVerified, false);
+  assert.match(r.warning, /SPY/);
+});
+
+test('earnings (US regression): TW counting is unaffected by the market parameter default', () => {
+  const r = earnings(db, { event: '2026-07-28', from: '2026-07-20' });
+  assert.equal(r.tradingDaysAway, 6); // the pinned golden case, still golden
+});
+
+test('earnings: unknown market is a house {error}', () => {
+  assert.ok(earnings(db, { event: '2026-07-08', from: '2026-06-30', market: 'jp' }).error);
+});
+
 // ---- #4 6e-3 per-theme heat cap -------------------------------------------------------------
 
 test('heat: 2 same-chain legs at default 1% each stay within the 2% cap', () => {

@@ -10,7 +10,7 @@
 // CONSCIOUSLY RE-UNDERWRITTEN one (Rule 6n). A re-underwritten/void position never reports a
 // breach — it reports P&L only, with a note explaining why the check was skipped.
 
-import { openDb, getOhlc, getAllPositions, getPositionsByTheme } from './db.mjs';
+import { openDb, getOhlc, getAllPositions, getPositionsByTheme, marketForCode } from './db.mjs';
 
 const r1 = (x) => x == null ? null : Math.round(x * 10) / 10;
 const r2 = (x) => x == null ? null : Math.round(x * 100) / 100;
@@ -37,6 +37,12 @@ export function themeStop(db, theme, prices) {
   if (bad) return { error: `invalid --price for ${bad.code}: "${bad.price}" is not a finite positive number` };
   const legs = getPositionsByTheme(db, theme);
   if (!legs.length) return { error: `no positions found for theme "${theme}"` };
+  // Separate books (US delta): TWD and USD costs must never be summed — a theme that spans
+  // both markets has no meaningful combined P&L% without FX, and FX is banned by design.
+  const marketsInTheme = new Set(legs.map((l) => marketForCode(l.code)));
+  if (marketsInTheme.size > 1) {
+    return { error: `theme "${theme}" mixes TW and US positions (${legs.map((l) => `${l.code}:${marketForCode(l.code)}`).join(', ')}) — separate books, no FX; split the theme per market` };
+  }
   const missing = legs.filter((l) => !prices.has(l.code));
   if (missing.length) return { error: `missing --price for: ${missing.map((l) => l.code).join(', ')}` };
 
@@ -117,19 +123,28 @@ function breachCheckOne(db, p, livePrice) {
   };
 }
 
-export function breachCheck(db, prices = new Map()) {
+/** Optional market filter ('tw'|'us') — Action C runs once per book, so each report's
+ * invocation sees only its own market's positions. */
+function positionsForMarket(db, market) {
+  const all = getAllPositions(db);
+  if (market == null) return all;
+  if (market !== 'tw' && market !== 'us') throw new Error(`--market must be tw or us, got "${market}"`);
+  return all.filter((p) => marketForCode(p.code) === market);
+}
+
+export function breachCheck(db, prices = new Map(), market = null) {
   const bad = findInvalidPrice(prices);
   if (bad) return { error: `invalid --price for ${bad.code}: "${bad.price}" is not a finite positive number` };
-  return getAllPositions(db).map((p) => breachCheckOne(db, p, prices.get(p.code)));
+  return positionsForMarket(db, market).map((p) => breachCheckOne(db, p, prices.get(p.code)));
 }
 
 // ---- #11 Action C review ------------------------------------------------------------------------
 
-export function review(db, prices = new Map()) {
-  const breachResults = breachCheck(db, prices);
+export function review(db, prices = new Map(), market = null) {
+  const breachResults = breachCheck(db, prices, market);
   if (breachResults.error) return breachResults; // propagate NaN/invalid-price rejection (T1.3)
   const breaches = new Map(breachResults.map((b) => [b.code, b]));
-  return getAllPositions(db).map((p) => {
+  return positionsForMarket(db, market).map((p) => {
     const price = prices.get(p.code);
     const invested = r1(p.shares * p.cost_avg);
     const live = price != null ? r1(p.shares * price) : null;
@@ -138,7 +153,7 @@ export function review(db, prices = new Map()) {
     const b = breaches.get(p.code);
     const targetHit = (price != null && p.target_lo != null) ? price >= p.target_lo : null;
     return {
-      code: p.code, name: p.name, shares: p.shares, costAvg: p.cost_avg,
+      code: p.code, market: marketForCode(p.code), name: p.name, shares: p.shares, costAvg: p.cost_avg,
       invested, live, unrealized, unrealizedPct,
       stop: p.stop, stopStatus: p.stop_status,
       stopHit: b.breached, targetHit, sessionsSinceBreach: b.sessionsSinceBreach,
@@ -170,16 +185,17 @@ function main() {
   const db = openDb();
   try {
     let result;
+    const market = flag(rest, '--market');
     if (verb === 'theme-stop') {
       result = themeStop(db, flag(rest, '--theme'), parsePriceFlags(rest));
     } else if (verb === 'breach-check') {
-      result = breachCheck(db, parsePriceFlags(rest));
+      result = breachCheck(db, parsePriceFlags(rest), market);
     } else if (verb === 'review') {
-      result = review(db, parsePriceFlags(rest));
+      result = review(db, parsePriceFlags(rest), market);
     } else {
       console.error('Usage: positions.mjs theme-stop --theme "<name>" --price code=P [--price code=P ...]');
-      console.error('       positions.mjs breach-check [--price code=P ...]');
-      console.error('       positions.mjs review [--price code=P ...]');
+      console.error('       positions.mjs breach-check [--price code=P ...] [--market tw|us]');
+      console.error('       positions.mjs review [--price code=P ...] [--market tw|us]');
       process.exit(1);
     }
     if (result && result.error) { console.error(`${verb}: ${result.error}`); process.exit(1); }

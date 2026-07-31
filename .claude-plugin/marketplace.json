@@ -9,7 +9,7 @@
       "name": "tw-stock-etf-advisor",
       "source": "./",
       "description": "Taiwan ETF / stock research, buy-sell decisions, holdings tracking, and Tokyo-Night K-line charting (0050 / 0052 common holdings, live-quote entry/exit plans, trade ledger, sell-signal review, candlestick charts with forward signals + post-mortem review panel, SQLite persistence) — plus built-in trade discipline: thesis tracking with health scores, a mirror-test entry gate, move attribution, data-richness rating, and cross-source validation.",
-      "version": "1.17.0"
+      "version": "1.18.0"
     }
   ]
 }

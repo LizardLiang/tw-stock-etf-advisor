@@ -471,3 +471,60 @@ test('6l-1: tradePlan surfaces entryAuthorised so the model never re-derives it'
   assert.ok('singlePoint' in p.entryAuthorised);
   assert.ok('empty' in p.entryAuthorised);
 });
+
+// ---- US delta: market-aware tick / liquidity / currency ----------------------------------
+
+test('tickSize (US): uniform $0.01 across every TW ladder breakpoint', () => {
+  for (const p of [5, 25, 75, 250, 750, 1500]) {
+    assert.equal(tickSize(p, 'us'), 0.01, `US tick at $${p} must be 0.01`);
+  }
+  // TW regression: the ladder is untouched by the market parameter's default
+  assert.equal(tickSize(75), 0.1);
+  assert.equal(tickSize(1500), 5);
+});
+
+test('6l-1 (US): the R:R ceiling stays cent-aligned instead of dropping to a TW tick', () => {
+  // stop 92, target 115 -> maxEntryForRR = floor2((115+138)/2.5) = 101.2. Band (style 1,
+  // bottom 100) runs to 102, so R:R binds at 101.2. TW tick at that level is 0.5 -> 101.0;
+  // US tick is 0.01 -> 101.2 survives as the authorised ceiling.
+  const base = { style: 1, stop: 92, target: 115, bottom: 100, close: 100 };
+  const tw = authorisedEntry({ ...base, market: 'tw' });
+  const us = authorisedEntry({ ...base, market: 'us' });
+  assert.equal(tw.hi, 101);
+  assert.equal(tw.tick, 0.5);
+  assert.equal(us.hi, 101.2);
+  assert.equal(us.tick, 0.01);
+});
+
+test('dataGrade (US): the liquidity floor is US$20M dollar volume, not NT$1億', () => {
+  // Identical numbers, both markets: close 100 x vol5avg 500k = 50M/day turnover.
+  // US: $50M >= $20M pass. TW: NT$50M < NT$1億 fail (grade C, critical gap).
+  seedFlatHistory(db, 'USLIQ', 74, '2026-07-20', { volume: 500_000 });
+  seedFlatHistory(db, '7777', 74, '2026-07-20', { volume: 500_000 });
+  const us = screenCode(db, 'USLIQ', null, { quoteOk: true, eventsKnown: true });
+  const tw = screenCode(db, '7777', null, { quoteOk: true, eventsKnown: true });
+  assert.equal(us.market, 'us');
+  assert.equal(us.dataGrade.checks.liquidity, 'pass');
+  assert.equal(tw.market, 'tw');
+  assert.equal(tw.dataGrade.checks.liquidity, 'fail');
+  assert.equal(tw.dataGrade.grade, 'C');
+  assert.ok(tw.dataGrade.gaps.some((s) => s.includes('NT$')));
+});
+
+test('tradePlan (US): emits market:us, USD equity currency, and a cent tick', () => {
+  seedFlatHistory(db, 'USPLAN', 74, '2026-07-20', { volume: 5_000_000 });
+  const p = tradePlan(db, 'USPLAN', { style: 1, zone: [98, 102], equity: 20000 });
+  assert.ok(!p.error, p.error);
+  assert.equal(p.market, 'us');
+  assert.equal(p.sizing.equityCurrency, 'USD');
+  assert.equal(p.entryAuthorised.tick, 0.01);
+});
+
+test('tradePlan (TW regression): numeric codes still report TWD and the TW tick ladder', () => {
+  seedFlatHistory(db, '6666', 74, '2026-07-20', { volume: 5_000_000 });
+  const p = tradePlan(db, '6666', { style: 1, zone: [98, 102], equity: 300000 });
+  assert.ok(!p.error, p.error);
+  assert.equal(p.market, 'tw');
+  assert.equal(p.sizing.equityCurrency, 'TWD');
+  assert.equal(p.entryAuthorised.tick, tickSize(98)); // the ladder, not 0.01
+});

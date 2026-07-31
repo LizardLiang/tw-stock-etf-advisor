@@ -29,7 +29,7 @@
 // with Histock to ~±1–2 given the ~3-month warmup; Histock is a spot-check, not the
 // source (see references/charting.md §9). Computed rows are cached into `indicators`.
 
-import { openDb, getOhlc } from './db.mjs';
+import { openDb, getOhlc, marketForCode } from './db.mjs';
 
 // ---- math helpers ------------------------------------------------------------------
 
@@ -110,11 +110,20 @@ function atr14At(rows, endIdx) {
 
 // ---- #8 6q data-richness grade (A/B/C) ------------------------------------------------
 
-// Same liquidity floor scan.mjs uses for its discovery sweep (--min-value default) — a stop
-// on an illiquid name is fiction (Rule 6q check 5), so this is the honest shared threshold.
-const LIQUIDITY_FLOOR = 100_000_000;
+// Liquidity floor per market (Rule 6q check 5) — a stop on an illiquid name is fiction.
+// tw: NT$1億/day, the same threshold scan.mjs uses for its discovery sweep (--min-value).
+// us: US$20M/day dollar volume — a straight NT$1億≈US$3M conversion would admit microcaps;
+//     $20M is a standard institutional liquidity screen, passed by every QQQ/SPY constituent
+//     by orders of magnitude, and excludes exactly the pump-prone smallcaps the TW floor
+//     exists to exclude. Turnover derives as close × vol5avg, which is already denominated
+//     in each market's own currency — only the floor constant and labels switch.
+const LIQUIDITY_FLOOR_BY_MARKET = { tw: 100_000_000, us: 20_000_000 };
+const CURRENCY_LABEL = { tw: 'NT$', us: 'US$' };
 
 function dataGrade(db, code, rows, last, vol5avg, opts = {}) {
+  const market = marketForCode(code);
+  const liquidityFloor = LIQUIDITY_FLOOR_BY_MARKET[market];
+  const cur = CURRENCY_LABEL[market];
   const ohlcDepth = rows.length >= 60 ? 'pass' : rows.length >= 14 ? 'partial' : 'fail';
   const indicatorsComputable = 'pass'; // reached this point without erroring — script ran clean
   const quoteAvailable = opts.quoteOk ? 'pass' : 'partial';
@@ -124,7 +133,7 @@ function dataGrade(db, code, rows, last, vol5avg, opts = {}) {
   // present for this exact session, else derive from the local screen (close × vol5avg).
   const snap = db.prepare('SELECT value FROM market_snapshot WHERE code=? AND date=?').get(code, last.date);
   const turnover = snap?.value ?? (vol5avg != null ? last.close * vol5avg : null);
-  const liquidity = turnover == null ? 'partial' : (turnover >= LIQUIDITY_FLOOR ? 'pass' : 'fail');
+  const liquidity = turnover == null ? 'partial' : (turnover >= liquidityFloor ? 'pass' : 'fail');
 
   const checks = { ohlcDepth, quoteAvailable, indicatorsComputable, eventDatesKnown, liquidity };
   const criticalGap = ohlcDepth === 'fail' || indicatorsComputable === 'fail' || liquidity === 'fail';
@@ -147,9 +156,10 @@ function dataGrade(db, code, rows, last, vol5avg, opts = {}) {
     upgradePath.push('查證財報/除權息日後，帶 --events-known 重跑');
   }
   if (liquidity !== 'pass') {
-    gaps.push(`liquidity: ${liquidity}${turnover != null ? ` (NT$${Math.round(turnover)})` : ' (unknown)'}`);
+    gaps.push(`liquidity: ${liquidity}${turnover != null ? ` (${cur}${Math.round(turnover)})` : ' (unknown)'}`);
+    const floorLabel = market === 'us' ? 'US$20M/日' : 'NT$1億/日';
     upgradePath.push(liquidity === 'fail'
-      ? '流動性未達門檻（NT$1億/日），非本工具可補，觀察是否放量後重評'
+      ? `流動性未達門檻（${floorLabel}），非本工具可補，觀察是否放量後重評`
       : '流動性數據不足（無 market_snapshot 且量能未知），補齊成交值後重評');
   }
 
@@ -307,7 +317,7 @@ export function screenCode(db, code, dateOpt, gradeOpts) {
   const histockSpotCheck = near(rsi6, 70) || near(rsi6, 80) || near(k9, 80) || near(dev20, 10);
 
   return {
-    code, date: last.date,
+    code, market: marketForCode(code), date: last.date,
     open: last.open, high: last.high, low: last.low, close: last.close,
     chgPct: r2(chgPct), volume: last.volume, vol5avg: vol5avg ? Math.round(vol5avg) : null,
     volRatio: r2(volRatio),
@@ -348,8 +358,11 @@ export function screenCode(db, code, dateOpt, gradeOpts) {
 
 // ---- trade plan (mode 2) ---------------------------------------------------------------
 
-/** TWSE/TPEx tick size for a given price level. Orders can only sit on a tick. */
-export function tickSize(price) {
+/** Exchange tick size for a given price level. Orders can only sit on a tick.
+ * tw: the TWSE/TPEx ladder. us: uniform $0.01 (decimalization; sub-penny quoting only exists
+ * below $1, out of this tool's universe — the ETF-pool liquidity floor excludes it anyway). */
+export function tickSize(price, market = 'tw') {
+  if (market === 'us') return 0.01;
   if (price < 10) return 0.01;
   if (price < 50) return 0.05;
   if (price < 100) return 0.1;
@@ -358,13 +371,13 @@ export function tickSize(price) {
   return 5;
 }
 /** Highest tick-aligned price <= p (tick chosen from the resulting level, not from p). */
-function floorToTick(p) {
+function floorToTick(p, market = 'tw') {
   for (const probe of [p, p - 1e-9]) {
-    const t = tickSize(probe);
+    const t = tickSize(probe, market);
     const v = Math.floor(probe / t + 1e-9) * t;
-    if (tickSize(v) === t) return Math.round(v / t) * t;
+    if (tickSize(v, market) === t) return Math.round(v / t) * t;
   }
-  const t = tickSize(p);
+  const t = tickSize(p, market);
   return Math.round(Math.floor(p / t) * t / t) * t;
 }
 
@@ -381,7 +394,7 @@ function floorToTick(p) {
  * The stop is held FIXED: it is structural (anchored to the pivot / reversal low / support),
  * so filling higher inside the zone does NOT move it — that asymmetry is the whole point.
  */
-export function authorisedEntry({ style, stop, target, bottom, close, pivot, breakoutPct = 3 }) {
+export function authorisedEntry({ style, stop, target, bottom, close, pivot, breakoutPct = 3, market = 'tw' }) {
   const RR_MIN = 1.5;
   // Highest entry where (T - E) / (E - S) >= RR_MIN.
   //  fixed target T      -> E <= (T + RR*S) / (1 + RR)
@@ -407,9 +420,9 @@ export function authorisedEntry({ style, stop, target, bottom, close, pivot, bre
 
   const lo = anchor, hi = Math.min(bandHi, maxEntryForRR);
   const empty = hi < lo;
-  const tickHi = empty ? null : floorToTick(hi);
+  const tickHi = empty ? null : floorToTick(hi, market);
   const tickEmpty = !empty && tickHi < lo;      // no tick sits inside the interval
-  const tick = tickSize(anchor);
+  const tick = tickSize(anchor, market);
   const singlePoint = !empty && !tickEmpty && Math.abs(tickHi - lo) < tick / 2;
 
   const binding = empty || maxEntryForRR < bandHi ? 'rr' : 'band';
@@ -526,14 +539,15 @@ export function tradePlan(db, code, opts) {
 
   // Use the REPORTED (rounded) stop, not the raw one: a reader must be able to reproduce
   // maxEntryForRR from the numbers printed in this same object.
+  const market = marketForCode(code);
   const entryAuthorised = authorisedEntry({
     style: opts.style, stop: r1(stop), target: opts.target, bottom, close: scr.close,
-    pivot: opts.pivot, breakoutPct: opts.breakoutPct ?? 3,
+    pivot: opts.pivot, breakoutPct: opts.breakoutPct ?? 3, market,
   });
 
   const is3c = opts.style === 3 && opts.confirm;
   const out = {
-    code, date: scr.date, close: scr.close, style: opts.style,
+    code, market, date: scr.date, close: scr.close, style: opts.style,
     variant: is3c ? '3c' : (volTrial ? '3-volTrial' : null),
     volTrial, pilotPct,
     volRatio: scr.volRatio,
@@ -553,7 +567,10 @@ export function tradePlan(db, code, opts) {
     const shares = Math.floor((opts.equity * 0.01) / oneR);
     const pilotShares = Math.floor(shares * pilotPct / 100);
     out.sizing = {
-      equity: opts.equity, riskPerShare: r1(oneR), shares,
+      // Separate books (no FX): --equity MUST be the equity of THIS market's book. The
+      // currency label makes a book mix-up auditable in every saved plan.
+      equity: opts.equity, equityCurrency: market === 'us' ? 'USD' : 'TWD',
+      riskPerShare: r1(oneR), shares,
       riskDollars: r1(shares * oneR),
       pilotPct, pilotShares, pilotRiskDollars: r1(pilotShares * oneR),
       note: `per-position 1% risk cap (6e-2); first entry is the ${pilotPct}% pilot (6e-5${volTrial ? ', halved by the 6j-A2 試行' : ''}); apply the 2% per-theme heat cap across correlated picks (6e-3)`,
@@ -574,7 +591,8 @@ function main() {
   const codes = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i].startsWith('--')) { if (!BOOL_FLAGS.has(argv[i])) i++; continue; }
-    codes.push(argv[i]);
+    // US tickers are stored uppercase (marketForCode + the ohlc PK are case-sensitive).
+    codes.push(/^\d/.test(argv[i]) ? argv[i] : argv[i].toUpperCase());
   }
   if (!codes.length) {
     console.error('Usage: screen.mjs <code> [<code>...] [--date YYYY-MM-DD]                    # screening');

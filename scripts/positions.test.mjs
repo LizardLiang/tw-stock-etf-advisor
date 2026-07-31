@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openDb, upsertOhlc, upsertPosition } from './db.mjs';
+import { openDb, upsertOhlc, upsertPosition, marketForCode } from './db.mjs';
 import { themeStop, breachCheck, review } from './positions.mjs';
 
 let tmpDir, db;
@@ -167,4 +167,31 @@ test('theme-stop (Tier-2): a zero-cost leg does not produce NaN — unrealizedPc
   const leg = r.legs.find((l) => l.code === 'ZERO');
   assert.equal(leg.unrealizedPct, null);
   assert.notEqual(Number.isNaN(leg.unrealizedPct), true);
+});
+
+// ---- US delta: separate books ------------------------------------------------------------------
+
+test('theme-stop: a theme spanning TW and US hard-errors — TWD+USD must never be summed', () => {
+  upsertPosition(db, { code: '8888', name: 'tw-leg', shares: 10, cost_avg: 100, opened_at: '2026-07-01', theme: '跨市場鏈', stop_status: 'active' });
+  upsertPosition(db, { code: 'MIXUS', name: 'us-leg', shares: 10, cost_avg: 100, opened_at: '2026-07-01', theme: '跨市場鏈', stop_status: 'active' });
+  const r = themeStop(db, '跨市場鏈', new Map([['8888', 95], ['MIXUS', 95]]));
+  assert.ok(r.error, 'must be a house {error}, not a merged P&L');
+  assert.match(r.error, /separate books/);
+});
+
+test('review: rows carry a market field derived from code shape', () => {
+  const rows = review(db, new Map());
+  for (const r of rows) assert.equal(r.market, marketForCode(r.code));
+  assert.equal(rows.find((x) => x.code === '3017').market, 'tw');
+  assert.equal(rows.find((x) => x.code === 'MIXUS').market, 'us');
+});
+
+test('review/breach-check: --market filter scopes the report to one book', () => {
+  const tw = review(db, new Map(), 'tw');
+  assert.ok(tw.length > 0);
+  for (const r of tw) assert.equal(r.market, 'tw');
+  const us = breachCheck(db, new Map(), 'us');
+  assert.ok(us.length > 0);
+  for (const r of us) assert.equal(marketForCode(r.code), 'us');
+  assert.throws(() => review(db, new Map(), 'jp'), /--market must be tw or us/);
 });

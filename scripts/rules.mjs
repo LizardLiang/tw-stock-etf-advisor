@@ -78,19 +78,22 @@ function isWeekend(iso) {
 //   - Conservative blackout under uncertainty (case 3 only): if
 //     `tradingDaysAway - uncertainPastCount <= 5`, force `blackout: true` and say so in
 //     `verdict` — better a false blackout on a genuine data gap than a false all-clear.
-export function earnings(db, { event, from, holidaysCrossed: _unused } = {}) {
+export function earnings(db, { event, from, market = 'tw', holidaysCrossed: _unused } = {}) {
   if (!isIsoDate(event)) return { error: `--event must be an ISO date (YYYY-MM-DD), got "${event}"` };
   if (from != null && !isIsoDate(from)) return { error: `--from must be an ISO date (YYYY-MM-DD), got "${from}"` };
+  if (market !== 'tw' && market !== 'us') return { error: `--market must be tw or us, got "${market}"` };
   const fromDate = from ?? isoToday();
   if (event < fromDate) return { error: `--event (${event}) must be on or after --from (${fromDate})` };
 
   // Self-updating: persist any newly-observed closure inside ohlc's current span (idempotent).
-  deriveHolidaysFromOhlc(db);
+  // Market-scoped (US delta): each market has its own calendar — NYSE trades right through
+  // 春節, and Thanksgiving is a normal TWSE session.
+  deriveHolidaysFromOhlc(db, market);
 
-  const ohlcRange = getOhlcDateRange(db);
+  const ohlcRange = getOhlcDateRange(db, market);
   const tradingDates = (ohlcRange.from && ohlcRange.to)
-    ? getTradingDatesInRange(db, ohlcRange.from, ohlcRange.to) : new Set();
-  const holidaySet = getHolidaySet(db, fromDate, event); // fallback table (builtin/twse/derived)
+    ? getTradingDatesInRange(db, ohlcRange.from, ohlcRange.to, market) : new Set();
+  const holidaySet = getHolidaySet(db, fromDate, event, market); // fallback table (builtin/derived)
 
   const crossed = [];
   let tradingDaysAway = 0;
@@ -130,14 +133,19 @@ export function earnings(db, { event, from, holidaysCrossed: _unused } = {}) {
   // flag; warning is the human-readable explanation. Real interval union (db.mjs mergeIntervals)
   // — NOT a min/max bounding box, which would hide a genuine GAP between the ohlc-derived span
   // and a synced year.
-  const verified = getVerifiedIntervals(db);
+  const verified = getVerifiedIntervals(db, market);
   const coverageVerified = isRangeFullyVerified(verified, fromDate, event);
   out.coverageVerified = coverageVerified;
   if (!coverageVerified) {
-    out.warning = `[${fromDate}, ${event}] is not fully inside VERIFIED coverage (ohlc-derived `
-      + `span + TWSE-synced years only — the static builtin table alone never counts as `
-      + `verified). Verified intervals: ${JSON.stringify(verified)}. Run --sync-holidays to `
-      + `verify the years this range touches.`;
+    out.warning = market === 'us'
+      ? `[${fromDate}, ${event}] is not fully inside VERIFIED US coverage (the US-scoped `
+        + `ohlc-derived span is the ONLY verified source — no NYSE sync endpoint exists). `
+        + `Verified intervals: ${JSON.stringify(verified)}. Extend coverage with `
+        + `fetch-history.mjs SPY --months 24 (SPY trades every NYSE session).`
+      : `[${fromDate}, ${event}] is not fully inside VERIFIED coverage (ohlc-derived `
+        + `span + TWSE-synced years only — the static builtin table alone never counts as `
+        + `verified). Verified intervals: ${JSON.stringify(verified)}. Run --sync-holidays to `
+        + `verify the years this range touches.`;
   }
   return out;
 }
@@ -241,8 +249,9 @@ export function thesis({ assumptions, redLines } = {}) {
 
 // ---- #9 3a cross-source deviation ------------------------------------------------------------
 
-export function deviate({ a, b, kind } = {}) {
+export function deviate({ a, b, kind, market = 'tw' } = {}) {
   if (typeof a !== 'number' || typeof b !== 'number') return { error: '--a and --b must both be numbers' };
+  if (market !== 'tw' && market !== 'us') return { error: `--market must be tw or us, got "${market}"` };
   const deltaAbs = r2(Math.abs(a - b));
   const rawPct = b !== 0 ? Math.abs(a - b) / b * 100 : null;
   const deltaPct = rawPct != null ? r2(rawPct) : null;
@@ -269,12 +278,17 @@ export function deviate({ a, b, kind } = {}) {
     threshold = { flag: 3 };
     verdict = deltaAbs > 3 ? '標註' : 'ok';
   } else if (kind === 'quote-vs-close') {
-    threshold = { refetch: 10 };
-    // Timing exemption (Rule 3a): a live-vs-T-1-close gap beyond the 漲跌停 bound is a
+    // Plausibility bound per market: TW 10% = the 漲跌停 daily limit, so a bigger gap can
+    // only be a bad fetch. US has no daily limit (LULD halts are intraday only) and real
+    // earnings gaps of 10-18% happen (NVDA/META precedents) — a 10% bound would flag real
+    // moves as fetch errors and stall Action C. 20% still catches wrong-ticker/stale-page.
+    const bound = market === 'us' ? 20 : 10;
+    threshold = { refetch: bound };
+    // Timing exemption (Rule 3a): a live-vs-T-1-close gap beyond the plausibility bound is a
     // suspect fetch, not a conflict — 'refetch', never '封鎖'. A zero baseline is the same
     // "suspect fetch" story, so it also resolves to 'refetch', not a false 'ok'.
     if (zeroBaseline) { verdict = 'refetch'; note = 'b=0 with a≠0 — suspect fetch, not agreement'; }
-    else verdict = rawPct != null && rawPct > 10 ? 'refetch' : 'ok';
+    else verdict = rawPct != null && rawPct > bound ? 'refetch' : 'ok';
   } else {
     return { error: `--kind must be price|weight|indicator|quote-vs-close, got "${kind}"` };
   }
@@ -372,6 +386,14 @@ async function dispatch() {
   };
 
   if (verb === 'earnings') {
+    const market = typeof flags.market === 'string' ? flags.market : 'tw';
+    if (flags['sync-holidays'] && market === 'us') {
+      // No keyless NYSE calendar JSON exists (Nager.Date serves US *federal* holidays —
+      // Good Friday missing, Columbus Day wrongly present — silently wrong for markets).
+      console.error('earnings: --sync-holidays has no US source — US verified coverage comes '
+        + 'from fetched OHLC. Run: node --experimental-sqlite scripts/fetch-history.mjs SPY --months 24');
+      process.exit(1);
+    }
     const db = openDb();
     try {
       if (flags['sync-holidays']) {
@@ -382,6 +404,7 @@ async function dispatch() {
       emit(earnings(db, {
         event: typeof flags.event === 'string' ? flags.event : undefined,
         from: typeof flags.from === 'string' ? flags.from : undefined,
+        market,
       }));
     } finally { db.close(); }
   } else if (verb === 'band') {
@@ -404,13 +427,14 @@ async function dispatch() {
       a: flags.a != null ? Number(flags.a) : undefined,
       b: flags.b != null ? Number(flags.b) : undefined,
       kind: typeof flags.kind === 'string' ? flags.kind : undefined,
+      market: typeof flags.market === 'string' ? flags.market : 'tw',
     }));
   } else {
-    console.error('Usage: rules.mjs earnings --event YYYY-MM-DD [--from YYYY-MM-DD] [--sync-holidays]');
+    console.error('Usage: rules.mjs earnings --event YYYY-MM-DD [--from YYYY-MM-DD] [--market tw|us] [--sync-holidays]');
     console.error('       rules.mjs band --style 1|2|3 --anchor A [--price P] [--breakout-pct N]');
     console.error('       rules.mjs heat --json legs.json --equity E [--cap 2]');
     console.error('       rules.mjs thesis --json thesis.json');
-    console.error('       rules.mjs deviate --a V1 --b V2 --kind price|weight|indicator|quote-vs-close');
+    console.error('       rules.mjs deviate --a V1 --b V2 --kind price|weight|indicator|quote-vs-close [--market tw|us]');
     process.exit(1);
   }
 }

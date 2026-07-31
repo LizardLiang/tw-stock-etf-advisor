@@ -13,12 +13,15 @@
 //
 // Re-running is safe: markers are UNIQUE on (code,date,action,price) and inserted OR IGNORE.
 
-import { openDb, addMarker, upsertPosition, deletePosition, getAllPositions } from './db.mjs';
+import { openDb, addMarker, upsertPosition, deletePosition, getAllPositions, marketForCode } from './db.mjs';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 const arg = (flag) => { const i = process.argv.indexOf(flag); return i >= 0 ? process.argv[i + 1] : null; };
+
+// Both code shapes (US delta): numeric TW codes OR alphabetic US tickers (NVDA, BRK.B).
+const TICKER_RE = /^(?:\d{4,6}|[A-Z][A-Z.\-]{0,9})$/;
 
 const VAULT = arg('--vault') || process.env.STOCK_VAULT || join(homedir(), 'personal', 'Obisidian');
 const NOTES_DIR = join(VAULT, 'Eliot', 'Notes');
@@ -49,6 +52,12 @@ function defaultLedgerPath() {
   return dir ? join(dir, 'stock-holdings.md') : null;
 }
 
+/** US ledger lives beside the TW one — same table format, prices in USD by construction. */
+function defaultUsLedgerPath() {
+  const dir = newestNotesYearDir();
+  return dir ? join(dir, 'us-stock-holdings.md') : null;
+}
+
 /** Newest file whose name contains "analysis" in the newest year dir. */
 function defaultNotePath() {
   const dir = newestNotesYearDir();
@@ -76,7 +85,7 @@ function seedLedger(db, ledgerPath) {
   const md = readFileSync(ledgerPath, 'utf8');
   const rows = tableRows(md, '## 交易明細')
     .map(c => ({ date: c[0], act: c[1], code: c[2], name: c[3], fill: c[4 + 1], stop: c[7], target: c[8], note: c[9] }))
-    .filter(r => /^\d{4}-\d{2}-\d{2}$/.test(r.date) && /^\d{4,6}$/.test(r.code));
+    .filter(r => /^\d{4}-\d{2}-\d{2}$/.test(r.date) && TICKER_RE.test(r.code));
 
   // A code is "closed" for post-mortem purposes if it has both a buy and a later sell.
   const sells = {}; for (const r of rows) if (r.act.includes('賣')) sells[r.code] = r;
@@ -137,7 +146,7 @@ function findThesisSlug(code) {
  * moved/renamed, markdown reformatted) and change NOTHING — never let an empty parse look like
  * an empty portfolio and delete every position.
  */
-export function seedPositions(db, ledgerPath) {
+export function seedPositions(db, ledgerPath, market = 'tw') {
   if (!ledgerPath || !existsSync(ledgerPath)) { console.error(`  positions: ledger not found: ${ledgerPath}`); return 0; }
   const md = readFileSync(ledgerPath, 'utf8');
 
@@ -145,13 +154,22 @@ export function seedPositions(db, ledgerPath) {
   const openedAt = {};
   for (const c of tableRows(md, '## 交易明細')) {
     const [date, act, code] = c;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{4,6}$/.test(code) || !act?.includes('買')) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !TICKER_RE.test(code) || !act?.includes('買')) continue;
     if (!openedAt[code] || date < openedAt[code]) openedAt[code] = date;
   }
 
-  const rows = tableRows(md, '## 持有中')
+  // Each ledger file owns ONE market's book (separate books, no FX). A code of the other
+  // market's shape in this file is a filing error — warn and skip, never seed it here, or the
+  // OTHER ledger's reconciliation would delete it as "not in my holdings".
+  const allRows = tableRows(md, '## 持有中')
     .map((c) => ({ code: c[0], name: c[1], sharesCell: c[2], costCell: c[3], stopCell: c[5], targetCell: c[6] }))
-    .filter((r) => /^\d{4,6}$/.test(r.code));
+    .filter((r) => TICKER_RE.test(r.code));
+  const rows = allRows.filter((r) => marketForCode(r.code) === market);
+  for (const r of allRows) {
+    if (marketForCode(r.code) !== market) {
+      console.error(`  positions: ${r.code} is a ${marketForCode(r.code)} code in the ${market} ledger (${ledgerPath}) — skipped; move it to the correct ledger`);
+    }
+  }
 
   if (!rows.length) {
     console.error('  positions: "## 持有中" parsed to ZERO rows — treating as a PARSE FAILURE, '
@@ -187,10 +205,13 @@ export function seedPositions(db, ledgerPath) {
     n++;
   }
 
-  // Reconcile: remove any tracked position no longer in the ledger's current holdings.
+  // Reconcile: remove any tracked position no longer in the ledger's current holdings —
+  // SCOPED to this ledger's market (US delta): seeding the TW ledger must never delete a US
+  // position (it is, by design, absent from the TW file), and vice versa.
   const currentCodes = new Set(rows.map((r) => r.code));
   let removed = 0;
   for (const p of getAllPositions(db)) {
+    if (marketForCode(p.code) !== market) continue;
     if (!currentCodes.has(p.code)) { deletePosition(db, p.code); removed++; }
   }
 
@@ -232,8 +253,8 @@ function seedWatchlist(db, notePath) {
   const block = md.slice(start).split('\n## ')[0];
   let n = 0;
   for (const line of block.split('\n')) {
-    // - 3711 日月光：等 KD 由死叉...轉金叉 + 守穩 20MA(602)
-    const m = line.match(/^-\s*(\d{4,6})\s+(\S+?)[：:]\s*(.+)$/);
+    // - 3711 日月光：等 KD 由死叉...轉金叉 + 守穩 20MA(602)   or   - NVDA NVIDIA：...
+    const m = line.match(/^-\s*(\d{4,6}|[A-Z][A-Z.\-]{0,9})\s+(\S+?)[：:]\s*(.+)$/);
     if (!m) continue;
     const cond = m[3].trim();
     // A watchlist item is a FORWARD signal: a condition to check, drawn at its trigger level.
@@ -250,13 +271,23 @@ function seedWatchlist(db, notePath) {
 
 function main() {
   const ledger = arg('--ledger') || defaultLedgerPath();
+  const usLedger = arg('--us-ledger') || defaultUsLedgerPath();
   const note = arg('--note') || defaultNotePath();
   const db = openDb();
   console.error(`Seeding from vault: ${VAULT}`);
   const a = seedLedger(db, ledger);
   const b = seedWatchlist(db, note);
-  const c = seedPositions(db, ledger);
-  console.log(`Seeded ${a + b} markers (ledger ${a}, watchlist ${b}); ${c} positions backfilled.`);
+  const c = seedPositions(db, ledger, 'tw');
+  // US book (separate ledger file). Absence is normal until the first US trade is recorded —
+  // NOT a parse failure, so it just skips; it can never touch TW positions either way.
+  let a2 = 0, c2 = 0;
+  if (usLedger && existsSync(usLedger)) {
+    a2 = seedLedger(db, usLedger);
+    c2 = seedPositions(db, usLedger, 'us');
+  } else {
+    console.error(`  us-ledger: not found (${usLedger}) — skipped (normal until the first US trade)`);
+  }
+  console.log(`Seeded ${a + a2 + b} markers (tw ledger ${a}, us ledger ${a2}, watchlist ${b}); ${c + c2} positions backfilled (tw ${c}, us ${c2}).`);
   db.close();
 }
 
