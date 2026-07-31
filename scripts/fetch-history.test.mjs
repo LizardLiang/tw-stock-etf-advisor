@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTpexMonth } from './fetch-history.mjs';
+import { parseTpexMonth, parseYahooChart, parseStooqCsv } from './fetch-history.mjs';
 
 const FIELDS = ['日 期', '成交張數', '成交仟元', '開盤', '最高', '最低', '收盤', '漲跌', '筆數'];
 const wrap = (data) => ({ stat: 'ok', name: '信驊', tables: [{ fields: FIELDS, data, totalCount: data.length }] });
@@ -67,4 +67,77 @@ test('THROWS when stat is not ok', () => {
 
 test('accepts stat casing variants (TPEx "ok" vs TWSE "OK")', () => {
   assert.equal(parseTpexMonth({ stat: 'OK', tables: [{ data: [LIVE_ROW] }] }).length, 1);
+});
+
+// ---- parseYahooChart (US delta) ----------------------------------------------------------
+
+const yahooWrap = (timestamp, quote, meta = {}) => ({
+  chart: {
+    result: [{
+      meta: { exchangeTimezoneName: 'America/New_York', shortName: 'NVIDIA Corporation', ...meta },
+      timestamp,
+      indicators: { quote: [quote] },
+    }],
+    error: null,
+  },
+});
+
+test('Yahoo: dates convert in the EXCHANGE timezone, not UTC (DST-edge regression)', () => {
+  // 2026-01-05 20:00 EST = 2026-01-06 01:00 UTC — a UTC slice lands this bar on the wrong day.
+  const eveningEt = Date.UTC(2026, 0, 6, 1, 0, 0) / 1000;
+  // 2026-07-06 09:30 EDT = 13:30 UTC — the normal daily-bar timestamp, in the DST half.
+  const morningEdt = Date.UTC(2026, 6, 6, 13, 30, 0) / 1000;
+  const { rows } = parseYahooChart(yahooWrap(
+    [eveningEt, morningEdt],
+    { open: [180, 160], high: [182, 162], low: [178, 158], close: [181, 161], volume: [1e8, 2e8] },
+  ));
+  assert.equal(rows[0].date, '2026-01-05');
+  assert.equal(rows[1].date, '2026-07-06');
+  assert.equal(rows[0].close, 181);
+  assert.equal(rows[1].volume, 2e8);
+});
+
+test('Yahoo: null bars are skipped, not written as NaN rows', () => {
+  const ts = [Date.UTC(2026, 6, 6, 13, 30) / 1000, Date.UTC(2026, 6, 7, 13, 30) / 1000];
+  const { rows } = parseYahooChart(yahooWrap(
+    ts,
+    { open: [160, null], high: [162, null], low: [158, null], close: [161, null], volume: [2e8, null] },
+  ));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].date, '2026-07-06');
+});
+
+test('Yahoo: picks up the instrument name from meta', () => {
+  const ts = [Date.UTC(2026, 6, 6, 13, 30) / 1000];
+  const { name } = parseYahooChart(yahooWrap(ts, { open: [1], high: [1], low: [1], close: [1], volume: [1] }));
+  assert.equal(name, 'NVIDIA Corporation');
+});
+
+test('Yahoo: THROWS by name on chart.error — HTTP 200 with an error body is a bad ticker', () => {
+  assert.throws(
+    () => parseYahooChart({ chart: { result: null, error: { code: 'Not Found', description: 'No data found, symbol may be delisted' } } }),
+    /chart\.error Not Found/,
+  );
+});
+
+test('Yahoo: THROWS on empty/missing result and on schema drift', () => {
+  assert.throws(() => parseYahooChart({ chart: { result: [], error: null } }), /result\[0\] missing/);
+  assert.throws(() => parseYahooChart(null), /no chart/);
+  assert.throws(() => parseYahooChart({ chart: { result: [{ timestamp: [1] }], error: null } }), /quote\[0\] missing/);
+});
+
+// ---- parseStooqCsv (US fallback) ---------------------------------------------------------
+
+const STOOQ_CSV = 'Date,Open,High,Low,Close,Volume\n2026-07-06,160,162,158,161,200000000\n2026-07-07,161,163,160,162.5,180000000';
+
+test('Stooq: parses daily CSV rows', () => {
+  const rows = parseStooqCsv(STOOQ_CSV);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[1], { date: '2026-07-07', open: 161, high: 163, low: 160, close: 162.5, volume: 180000000 });
+});
+
+test('Stooq: THROWS by name on a wrong header — "No data" must not parse into zero rows', () => {
+  assert.throws(() => parseStooqCsv('No data'), /unexpected CSV header/);
+  assert.throws(() => parseStooqCsv('<!DOCTYPE html>'), /unexpected CSV header/);
+  assert.throws(() => parseStooqCsv(''), /unexpected CSV header/);
 });
