@@ -20,6 +20,26 @@ import { homedir } from 'node:os';
 
 const SCHEMA_VERSION = '1';
 
+// ---- market classification (US-market delta, 2026-07-31) ---------------------------------
+//
+// TW codes are numeric (2330, 00892); US tickers are alphabetic (NVDA, BRK.B). The two shapes
+// never collide, so every table stays keyed on `code` alone and the market FAMILY is derived
+// from the code's shape. This function is the single owner of that classification — every
+// script imports it; nobody re-derives it with an ad-hoc regex. ('tw' is the family; the
+// finer 'twse' | 'tpex' | 'us' venue lives in stocks.market.)
+export function marketForCode(code) {
+  return /^\d/.test(String(code)) ? 'tw' : 'us';
+}
+
+// Per-market SQL fragments. Table names cannot be bound as parameters, so the market value is
+// validated HERE and anything unknown throws by name — never a silent fall-through to the
+// wrong market's calendar (the same silent-degradation class as endpoint rot).
+function marketSql(market) {
+  if (market === 'tw') return { glob: '[0-9]*', holidayTable: 'holidays' };
+  if (market === 'us') return { glob: '[A-Z]*', holidayTable: 'holidays_us' };
+  throw new Error(`unknown market "${market}" — expected 'tw' or 'us'`);
+}
+
 // The built-in default. The user picked the project folder so the DB sits next to the
 // data they already work with. Override wins via env or Profile.md (see resolveDbPath).
 const DEFAULT_DB_PATH = join(homedir(), 'personal', 'stocks', 'stocks.db');
@@ -69,7 +89,7 @@ export function initSchema(db) {
     CREATE TABLE IF NOT EXISTS stocks (
       code   TEXT PRIMARY KEY,
       name   TEXT,
-      market TEXT DEFAULT 'twse'          -- 'twse' | 'tpex'
+      market TEXT DEFAULT 'twse'          -- 'twse' | 'tpex' | 'us'
     );
     CREATE TABLE IF NOT EXISTS ohlc (
       code   TEXT NOT NULL,
@@ -149,6 +169,15 @@ export function initSchema(db) {
       name TEXT,
       source TEXT                        -- 'builtin' | 'twse' | 'derived' (from ohlc gaps)
     );
+    -- Weekday non-trading days (US / NYSE+Nasdaq). Same doctrine as holidays above: the builtin
+    -- list is a best-effort accuracy aid; VERIFIED US coverage comes only from the US-scoped
+    -- ohlc-derived span (there is no TWSE-style sync source for NYSE — seed the calendar by
+    -- fetching SPY history, which trades every NYSE session).
+    CREATE TABLE IF NOT EXISTS holidays_us (
+      date TEXT PRIMARY KEY,             -- ISO, non-trading weekday only
+      name TEXT,
+      source TEXT                        -- 'builtin' | 'derived' (from ohlc gaps)
+    );
   `);
   migrate(db);  // add post-mortem columns to markers if an older DB predates them
   db.prepare('INSERT OR IGNORE INTO meta(key,value) VALUES (?,?)')
@@ -180,7 +209,24 @@ const BUILTIN_HOLIDAYS_2026 = [
 ];
 const BUILTIN_HOLIDAYS_COVERAGE = { from: '2026-01-01', to: '2026-12-31' };
 
-/** Idempotent: seeds the built-in holiday list and records its coverage range in `meta`. */
+// Built-in NYSE/Nasdaq full-day market holidays for 2026. Weekday closures only (weekends are
+// already non-trading). Unlike Taiwan there are no make-up workdays, but half-days (e.g. the
+// day after Thanksgiving) still produce ohlc rows and are deliberately NOT listed.
+const BUILTIN_US_HOLIDAYS_2026 = [
+  ['2026-01-01', "New Year's Day"],
+  ['2026-01-19', 'Martin Luther King Jr. Day'],
+  ['2026-02-16', "Washington's Birthday"],
+  ['2026-04-03', 'Good Friday'],
+  ['2026-05-25', 'Memorial Day'],
+  ['2026-06-19', 'Juneteenth'],
+  ['2026-07-03', 'Independence Day (observed — 7/4 is a Saturday)'],
+  ['2026-09-07', 'Labor Day'],
+  ['2026-11-26', 'Thanksgiving Day'],
+  ['2026-12-25', 'Christmas Day'],
+];
+const BUILTIN_US_HOLIDAYS_COVERAGE = { from: '2026-01-01', to: '2026-12-31' };
+
+/** Idempotent: seeds both markets' built-in holiday lists and records coverage in `meta`. */
 function seedBuiltinHolidays(db) {
   const ins = db.prepare(`INSERT INTO holidays(date,name,source) VALUES(?,?,'builtin')
                            ON CONFLICT(date) DO NOTHING`);
@@ -189,6 +235,13 @@ function seedBuiltinHolidays(db) {
     .run('holidays_builtin_from', BUILTIN_HOLIDAYS_COVERAGE.from);
   db.prepare('INSERT OR IGNORE INTO meta(key,value) VALUES (?,?)')
     .run('holidays_builtin_to', BUILTIN_HOLIDAYS_COVERAGE.to);
+  const insUs = db.prepare(`INSERT INTO holidays_us(date,name,source) VALUES(?,?,'builtin')
+                             ON CONFLICT(date) DO NOTHING`);
+  for (const [date, name] of BUILTIN_US_HOLIDAYS_2026) insUs.run(date, name);
+  db.prepare('INSERT OR IGNORE INTO meta(key,value) VALUES (?,?)')
+    .run('holidays_us_builtin_from', BUILTIN_US_HOLIDAYS_COVERAGE.from);
+  db.prepare('INSERT OR IGNORE INTO meta(key,value) VALUES (?,?)')
+    .run('holidays_us_builtin_to', BUILTIN_US_HOLIDAYS_COVERAGE.to);
 }
 
 /** Current holiday-table coverage range, as recorded in `meta` (extended by --sync-holidays). */
@@ -210,9 +263,10 @@ export function extendHolidayCoverage(db, from, to) {
 }
 
 /** Set of ISO holiday dates in [from, to] inclusive, for the trading-day counter. */
-export function getHolidaySet(db, from, to) {
+export function getHolidaySet(db, from, to, market = 'tw') {
+  const { holidayTable } = marketSql(market);
   return new Set(
-    db.prepare('SELECT date FROM holidays WHERE date>=? AND date<=?').all(from, to).map(r => r.date)
+    db.prepare(`SELECT date FROM ${holidayTable} WHERE date>=? AND date<=?`).all(from, to).map(r => r.date)
   );
 }
 
@@ -266,13 +320,17 @@ export function mergeIntervals(intervals) {
   return merged;
 }
 
-/** VERIFIED coverage intervals (merged): the ohlc-derived span + every TWSE-synced year. The
- * builtin table's nominal range is deliberately excluded — it is not a coverage guarantee. */
-export function getVerifiedIntervals(db) {
+/** VERIFIED coverage intervals (merged): the market-scoped ohlc-derived span, plus (TW only)
+ * every TWSE-synced year. The builtin tables' nominal ranges are deliberately excluded — they
+ * are not a coverage guarantee. US has no sync source, so its ONLY verified coverage is the
+ * ohlc span of fetched US history (seed it with SPY, which trades every NYSE session). */
+export function getVerifiedIntervals(db, market = 'tw') {
   const intervals = [];
-  const ohlcRange = getOhlcDateRange(db);
+  const ohlcRange = getOhlcDateRange(db, market);
   if (ohlcRange.from && ohlcRange.to) intervals.push({ from: ohlcRange.from, to: ohlcRange.to });
-  for (const y of getSyncedYears(db)) intervals.push({ from: `${y}-01-01`, to: `${y}-12-31` });
+  if (market === 'tw') {
+    for (const y of getSyncedYears(db)) intervals.push({ from: `${y}-01-01`, to: `${y}-12-31` });
+  }
   return mergeIntervals(intervals);
 }
 
@@ -291,16 +349,21 @@ export function isRangeFullyVerified(mergedIntervals, from, to) {
 // rows across every tracked code, inside the DB's own covered span, is a genuine closure.
 // This is free, needs no network, and self-updates as `fetch-history.mjs` pulls more history.
 
-/** [min(date), max(date)] across ALL `ohlc` rows (any code) — the span we can derive from. */
-export function getOhlcDateRange(db) {
-  const row = db.prepare('SELECT min(date) minD, max(date) maxD FROM ohlc').get();
+/** [min(date), max(date)] across the given MARKET's `ohlc` rows — the span we can derive
+ * from. Market-scoped since the US delta: TW and US calendars differ, so one market's rows
+ * must never count as trading evidence for the other (春節 is a normal NYSE week). */
+export function getOhlcDateRange(db, market = 'tw') {
+  const { glob } = marketSql(market);
+  const row = db.prepare('SELECT min(date) minD, max(date) maxD FROM ohlc WHERE code GLOB ?').get(glob);
   return { from: row?.minD ?? null, to: row?.maxD ?? null };
 }
 
-/** Distinct dates with at least one `ohlc` row (any code) in [from, to] — i.e. trading days. */
-export function getTradingDatesInRange(db, from, to) {
+/** Distinct dates with at least one `ohlc` row (given market) in [from, to] — trading days. */
+export function getTradingDatesInRange(db, from, to, market = 'tw') {
+  const { glob } = marketSql(market);
   return new Set(
-    db.prepare('SELECT DISTINCT date FROM ohlc WHERE date>=? AND date<=?').all(from, to).map((r) => r.date)
+    db.prepare('SELECT DISTINCT date FROM ohlc WHERE code GLOB ? AND date>=? AND date<=?')
+      .all(glob, from, to).map((r) => r.date)
   );
 }
 
@@ -310,18 +373,19 @@ export function getTradingDatesInRange(db, from, to) {
  * existing 'builtin'/'twse' entry's provenance). Self-updating: re-running after a fresh
  * `fetch-history.mjs` pull picks up any newly-observed closures automatically.
  */
-export function deriveHolidaysFromOhlc(db) {
-  const { from, to } = getOhlcDateRange(db);
+export function deriveHolidaysFromOhlc(db, market = 'tw') {
+  const { holidayTable } = marketSql(market);
+  const { from, to } = getOhlcDateRange(db, market);
   if (!from || !to) return { from: null, to: null, added: 0 };
-  const trading = getTradingDatesInRange(db, from, to);
-  const ins = db.prepare(`INSERT INTO holidays(date,name,source) VALUES(?,?,'derived')
+  const trading = getTradingDatesInRange(db, from, to, market);
+  const ins = db.prepare(`INSERT INTO ${holidayTable}(date,name,source) VALUES(?,?,'derived')
                            ON CONFLICT(date) DO NOTHING`);
   let added = 0;
   let cursor = from;
   while (cursor <= to) {
     const day = new Date(`${cursor}T00:00:00`).getDay();
     if (day !== 0 && day !== 6 && !trading.has(cursor)) {
-      const res = ins.run(cursor, 'derived closure (no ohlc rows across any code on this weekday)');
+      const res = ins.run(cursor, `derived closure (no ohlc rows across any ${market} code on this weekday)`);
       if (res.changes > 0) added++;
     }
     const d = new Date(`${cursor}T00:00:00`);

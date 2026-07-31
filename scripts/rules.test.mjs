@@ -42,7 +42,9 @@ before(() => {
   // boat), 7/10 (typhoon) — 4/3/5/1/6/19 are ALSO in the static builtin table; 4/6 and 7/10
   // are NOT (that gap is exactly what this fix closes).
   const closed = new Set(['2026-04-03', '2026-04-06', '2026-05-01', '2026-06-19', '2026-07-10']);
-  seedTradingCalendar(db, 'CALTEST', '2026-04-01', '2026-07-20', closed);
+  // Numeric code: the trading calendar is market-scoped (US delta) and this fixture IS the TW
+  // calendar — an alphabetic code would classify as 'us' and vanish from TW derivation.
+  seedTradingCalendar(db, '9999', '2026-04-01', '2026-07-20', closed);
 });
 
 after(() => {
