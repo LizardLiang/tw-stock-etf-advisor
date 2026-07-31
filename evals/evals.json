@@ -27,6 +27,14 @@
       "assertions": []
     },
     {
+      "id": 4,
+      "name": "us-recommendation",
+      "prompt": "美股幫我從 QQQ 前十大挑一檔，給進出場計畫，我美股帳戶有 2 萬美金",
+      "expected_output": "A standalone 美股報告 (never merged with any TW table): pool from the Slickcharts nasdaq100 recipe, S&P 500 (^GSPC) 50/200MA gate, history via fetch-history.mjs <TICKER>, all stop/TP/R:R/sizing numbers quoted verbatim from screen.mjs trade-plan JSON with sizing.equityCurrency USD (equity 20000 = the USD book, no FX), earnings blackout via rules.mjs earnings --market us, entryAuthorised quoted as the buy zone with the $0.01 tick, and the 6p mirror test stated in USD.",
+      "files": [],
+      "assertions": []
+    },
+    {
       "id": 3,
       "name": "chart-us-stock",
       "prompt": "show me a candlestick chart for NVDA and mark why I bought it",

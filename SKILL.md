@@ -1,25 +1,30 @@
 ---
 name: tw-stock-etf-advisor
 description: >-
-  Taiwan ETF and stock research, buy/sell decisions, and personal holdings
-  tracking. Use this whenever the user asks about Taiwan ETFs (especially 0050
-  元大台灣50 and 0052 富邦科技), wants to find common/overlapping holdings between
-  ETFs, asks "which stock should I buy" with reasoning, wants an entry price and
-  sell strategy (buy zone / 停利 / 停損), wants to record a trade they made, or
-  asks to review their current holdings and get selling suggestions. Trigger even
-  when the user only says things like "幫我看 0050 跟 0052 共同持股", "推薦我買哪一檔",
-  "我買了 <股票> <股數> @<價>", "檢查我的持股", or "我現在該賣什麼" — they need this
-  skill's exact data-sourcing and tracking workflow, not ad-hoc browsing. Always
-  fetch live data with agent-browser; never guess or derive prices. ALSO use this
-  skill whenever the user wants to SEE or VISUALIZE a Taiwan stock — "畫 K 線",
-  "畫個 K 線圖", "把買賣點/進出場標在圖上", "show me the chart for 2330", "candlestick
-  chart", "K-line", "視覺化我的持股", "畫出奇鋐的走勢" — it generates a standalone
-  Tokyo-Night candlestick chart (Action D) that marks WHY each buy/sell/hold happened.
+  Taiwan AND US stock/ETF research, buy/sell decisions, and personal holdings
+  tracking — two separate books, two separate reports. Use this whenever the user
+  asks about Taiwan ETFs (especially 0050 元大台灣50 and 0052 富邦科技), wants to find
+  common/overlapping holdings between ETFs, asks "which stock should I buy" with
+  reasoning, wants an entry price and sell strategy (buy zone / 停利 / 停損), wants
+  to record a trade they made, or asks to review their current holdings and get
+  selling suggestions. Trigger even when the user only says things like "幫我看
+  0050 跟 0052 共同持股", "推薦我買哪一檔", "我買了 <股票> <股數> @<價>", "檢查我的持股",
+  or "我現在該賣什麼" — they need this skill's exact data-sourcing and tracking
+  workflow, not ad-hoc browsing. ALSO trigger for US stocks (美股): "should I buy
+  NVDA / AAPL / TSLA", "美股推薦", "QQQ / SPY top holdings", "美股持股檢查",
+  "我買了 NVDA 10 股" — any alphabetic ticker routes to the US book with the same
+  rules. Always fetch live data with agent-browser or the documented JSON
+  endpoints; never guess or derive prices. ALSO use this skill whenever the user
+  wants to SEE or VISUALIZE a stock — "畫 K 線", "畫個 K 線圖", "把買賣點/進出場標在圖上",
+  "show me the chart for 2330", "show me the chart for NVDA", "candlestick chart",
+  "K-line", "視覺化我的持股", "畫出奇鋐的走勢", "畫 NVDA 的 K 線" — it generates a
+  standalone Tokyo-Night candlestick chart (Action D) that marks WHY each
+  buy/sell/hold happened (TW 紅漲綠跌; US 綠漲紅跌, market-aware).
 ---
 
 # Taiwan Stock & ETF Advisor
 
-This skill reproduces a research-to-tracking workflow for Taiwan equities. It has
+This skill reproduces a research-to-tracking workflow for Taiwan AND US equities. It has
 **four** actions. Figure out which one the user wants from their phrasing, then follow
 that section. The non-negotiable rules below apply to all of them.
 
@@ -27,6 +32,36 @@ that section. The non-negotiable rules below apply to all of them.
 - **Action B** — record a trade to the holdings ledger
 - **Action C** — review current holdings & suggest selling
 - **Action D** — draw a K-line (candlestick) chart marking buy/sell/hold reasons
+
+## 市場維度 — 台股／美股兩本帳 (added v1.20.0)
+
+Every Action carries a **market dimension**, derived from the ticker's shape and owned by
+`db.mjs marketForCode` (Rule 8): numeric codes (2330, 00892) = 台股 (`tw`), alphabetic
+tickers (NVDA, BRK.B) = 美股 (`us`). Never classify by hand or by memory — every script
+emits `market` in its JSON; read it back.
+
+1. **Reports are ALWAYS separate.** When both markets are in scope (Action A both pools,
+   Action C both books), output a **台股報告** and a **美股報告** as two distinct top-level
+   sections — never one merged table, never interleaved rows. A single-market request
+   produces that market's report only.
+2. **Separate books, no FX — ever.** TWD equity for the TW book, USD equity for the US
+   book. Sizing (6e-2), theme heat (6e-3), and P&L are computed per book with that book's
+   equity; the two are never summed, converted, or compared through an exchange rate.
+   Profile.md may carry `stock_equity_twd:` and `stock_equity_usd:` — read the matching
+   key and pass it as `--equity`; when the needed book's equity is absent, use 6p's
+   1R-terms clause, never substitute the other book's number through FX. `screen.mjs`
+   stamps `sizing.equityCurrency` so a book mix-up is auditable in every saved plan.
+3. **Themes never span markets** — mechanically enforced: `positions.mjs theme-stop`
+   hard-errors on a mixed-market theme. Group a US AI leg under a US theme, not the
+   TW AI 鏈.
+4. **Two ledgers**: `Eliot/Notes/<YYYY>/stock-holdings.md` (台股) and
+   `Eliot/Notes/<YYYY>/us-stock-holdings.md` (美股, USD prices, same table format).
+   Action B routes the write by ticker shape; `seed-from-obsidian.mjs` seeds and
+   reconciles each ledger against its own market only.
+5. **Per-market rule constants** (each script-owned, see the Rule 8 table): tick
+   ($0.01 flat for US vs the TWSE ladder, 6l-1), liquidity floor (US$20M/day vs NT$1億/日,
+   6q), quote plausibility bound (20% vs 10%, 3a), trading calendar (NYSE vs TWSE, 6h),
+   market gate index (S&P 500 vs TAIEX, 6f).
 
 ## Core rules (why they matter)
 
@@ -56,7 +91,10 @@ that section. The non-negotiable rules below apply to all of them.
     conflict — different timestamps, not a disagreement. Apply a plausibility bound
     instead: |live − last settled close| > 10% (Taiwan's 漲跌停 limit) is presumed a
     fetch/parse error (wrong ticker, stale page) → re-fetch before analyzing, never
-    treat it as a real move.
+    treat it as a real move. **美股 bound: 20%** (`deviate --market us`) — the US has
+    no daily limit (LULD halts are intraday only) and real earnings gaps of 10–18%
+    happen; a 10% bound would flag genuine moves as fetch errors and stall Action C,
+    while 20% still catches wrong-ticker/stale-page errors.
     **"Verified"** means re-fetched from the declared primary with value + timestamp
     cited — never assert verification without a fetch.
     **Computed mechanically by `rules.mjs deviate --a V1 --b V2 --kind price|weight|
@@ -280,9 +318,12 @@ that section. The non-negotiable rules below apply to all of them.
    ODM) depend on the same end demand. A demand shock hits all simultaneously.
    Size as one combined position, not N independent bets.
 
-   **6e-2. Per-position risk cap: 1% of account equity.**
+   **6e-2. Per-position risk cap: 1% of account equity — of the MATCHING book.**
    `shares = (account_equity × 0.01) / (entry_price − stop_price)`.
    This replaces "buy N shares" — position size is derived from the stop distance.
+   The equity is always the book matching the stock's market (市場維度 §2): TWD
+   equity for TW codes, USD equity for US tickers — never the combined worth, never
+   an FX conversion. Check `sizing.equityCurrency` in the script output.
 
    **6e-3. Per-theme heat cap: 2% of account (all correlated positions combined).**
    For 3 same-chain positions: each risks ~0.67% max, not 1% each.
@@ -320,14 +361,16 @@ that section. The non-negotiable rules below apply to all of them.
 
    **6f. Market condition gate (Minervini/Weinstein).**
    The market environment is a prerequisite for any concentrated theme position.
-   Check the TAIEX (加權指數) condition before recommending entries:
-   - **TAIEX above 50-day AND 200-day MA**: full exposure allowed
-   - **TAIEX below 50-day MA**: reduce theme heat cap to 50% of normal (1% instead
+   Check the market's OWN index before recommending entries — **TAIEX (加權指數,
+   `^TWII`) for 台股; S&P 500 (`^GSPC`) for 美股**, same three tiers:
+   - **Index above 50-day AND 200-day MA**: full exposure allowed
+   - **Index below 50-day MA**: reduce theme heat cap to 50% of normal (1% instead
      of 2%), and flag "大盤轉弱，減碼操作"
-   - **TAIEX below 200-day MA**: do NOT recommend new entries, suggest cash. Flag
+   - **Index below 200-day MA**: do NOT recommend new entries, suggest cash. Flag
      "大盤空頭，不建議進場"
-   Fetch the TAIEX quote from Yahoo (`^TWII`) during Action A and compare against
-   the index's MA levels. This prevents entering theme positions during broad
+   Fetch the index quote from Yahoo during Action A and compare against the
+   index's MA levels. A TW gate verdict never gates a US pick or vice versa — each
+   report runs its own gate. This prevents entering theme positions during broad
    market corrections where even good stocks get dragged down.
 
    **6g. Buy zone anchored to technical levels, not arbitrary percentages.**
@@ -351,11 +394,14 @@ that section. The non-negotiable rules below apply to all of them.
      pre-earnings window costs an occasional missed move; ignoring it risks an
      un-stoppable loss. Fetch the next earnings date during Action A step 5 (recipe in
      `references/data-sources.md`).
-   - **Computed mechanically by `rules.mjs earnings --event <date> --from <date>`**
-     (Rule 8) — the model supplies the earnings date (a judgment/discovery input); the
-     script counts trading days and reads back `tradingDaysAway`/`blackout`/
-     `coverageVerified`/`warning`. **Never count trading days by hand** — an off-by-one
-     here flips enter/don't-enter (2026-07-20: 1590 sat exactly on the 6-vs-5 line).
+   - **Computed mechanically by `rules.mjs earnings --event <date> --from <date>
+     [--market tw|us]`** (Rule 8) — the model supplies the earnings date (a
+     judgment/discovery input); the script counts trading days and reads back
+     `tradingDaysAway`/`blackout`/`coverageVerified`/`warning`. **Never count trading
+     days by hand** — an off-by-one here flips enter/don't-enter (2026-07-20: 1590 sat
+     exactly on the 6-vs-5 line). **美股: always pass `--market us`** — the NYSE
+     calendar differs (Thanksgiving is a normal TWSE session; 春節 is a normal NYSE
+     week), and the script keeps the two calendars fully separate.
    - **`coverageVerified: false` is an instruction, not decoration (added 2026-07-20).**
      It means the range is NOT inside verified coverage — verified = the ohlc-derived
      span ∪ years actually synced from TWSE. **The built-in holiday table never counts
@@ -369,6 +415,10 @@ that section. The non-negotiable rules below apply to all of them.
        un-stoppable earnings gap — the asymmetry decides it.
      - `tradingDaysAway > 7` → proceed, but state the count is provisional.
      Report the `warning` text verbatim rather than paraphrasing it as "資料略舊".
+     **美股 coverage**: there is NO `--sync-holidays` source for NYSE (the flag
+     hard-errors with `--market us`) — US verified coverage comes solely from fetched
+     US OHLC. To verify a US window, run `fetch-history.mjs SPY --months 24` (SPY
+     trades every NYSE session, so its span IS the calendar), then re-run earnings.
 
    **6h-1. 事件牆輸出規格 — 二選一指令，禁止中性語句 (added 2026-07-15,
    user-audited).** Whenever a watchlist trigger's firing window overlaps a known
@@ -400,6 +450,12 @@ that section. The non-negotiable rules below apply to all of them.
    - For a held position approaching its ex-div date, note it so the user isn't
      alarmed by the mechanical drop, and remember the recorded 停損 may need adjusting
      down by the dividend amount.
+   - **美股條款**: there is no 除權息 season — US stocks pay quarterly cash dividends,
+     typically <1%/quarter, too small to fake a stop breach. The mechanical-gap check
+     applies only when the dividend is material (special dividends, high-yield names);
+     Action C's check-1 short-circuit still runs with the dividend amount when it is.
+     Note: Yahoo's OHLC arrays are split-adjusted — after a split, refetch the full
+     range (`fetch-history.mjs <TICKER> --months N`) so old rows restate.
 
    **6j. Volume confirmation — a reclaim/breakout without volume is suspect.**
    The technical gate (6b) uses price/MA/KD/RSI but ignores volume; we already fetch
@@ -485,7 +541,9 @@ that section. The non-negotiable rules below apply to all of them.
    same session: R:R ceiling 36.18 sits below the band floor 37.15 → no legal price
    exists, so it is not a buy at any price). Both are legitimate, reportable answers —
    say 「唯一合法進場價 X」 or 「授權集合為空」 rather than widening the zone to make
-   it look tradeable.
+   it look tradeable. **The tick is per-market** (script-owned): the TWSE/TPEx ladder
+   for 台股; a flat **$0.01** for 美股 — so a US ceiling stays cent-aligned and the
+   single-point/empty geometry is far rarer there.
 
    **Computed mechanically by `screen.mjs`'s trade plan → `entryAuthorised`** (Rule 8,
    added v1.15.0). Read `lo`/`hi` as the buy zone; `singlePoint`/`empty`/`binding`
@@ -599,7 +657,9 @@ that section. The non-negotiable rules below apply to all of them.
    2. **即時報價可得**。
    3. **技術指標可算**（`screen.mjs` 能跑，不 hard-error）。
    4. **事件日可查**（財報日 6h、除權息日 6i）。
-   5. **流動性**（成交量夠大，停損才有意義 — 5日均量過低者標 C）。
+   5. **流動性**（成交量夠大，停損才有意義 — 5日均量過低者標 C）。門檻依市場：
+      台股 **NT$1億/日**；美股 **US$20M/日**（直接匯率換算 NT$1億≈US$3M 會放進
+      microcap — US$20M 是標準機構流動性篩，QQQ/SPY 成分股全數大幅通過）。
 
    **Rating**:
    - **A** = 全過 → 正常分析。
@@ -666,9 +726,16 @@ that section. The non-negotiable rules below apply to all of them.
    | 6q data-richness grade **(NEW)** | 5-check grade, gaps, upgrade path | `screen.mjs` → `dataGrade.{grade,checks,gaps,upgradePath}` | read (`--quote-ok`/`--events-known` are judgment flags) |
    | 3a cross-source deviation | Δabs/Δ%, verdict | `rules.mjs deviate` → `deltaAbs`/`deltaPct`/`verdict` | read |
    | Action C P&L + sell signals **(NEW)** | cost×shares, unrealized P&L, stop/target hit | `positions.mjs review` → `invested`/`live`/`unrealized`/`unrealizedPct`/`stopHit`/`targetHit` | read |
+   | market classification (市場維度, v1.20.0) | tw vs us from ticker shape | `db.mjs marketForCode` — surfaced as `market` in every script's JSON | read (never classify by hand) |
+   | 6l-1 US tick (v1.20.0) | $0.01 flat tick for US entries | `screen.mjs tickSize(price,'us')` → `entryAuthorised.tick` | read |
+   | 6q US liquidity floor (v1.20.0) | US$20M/day dollar-volume check | `screen.mjs` → `dataGrade.checks.liquidity` (floor selected by market) | read |
+   | 6h US trading-day count (v1.20.0) | NYSE-calendar day count to event | `rules.mjs earnings --market us` → `tradingDaysAway`/`blackout`/`coverageVerified` | read (supplies `--event`; `--sync-holidays` hard-errors for us — verify via SPY fetch) |
+   | 3a US quote bound (v1.20.0) | 20% plausibility bound | `rules.mjs deviate --market us --kind quote-vs-close` → `threshold`/`verdict` | read |
+   | 市場維度 §3 cross-market theme guard (v1.20.0) | mixed-market theme rejection | `positions.mjs theme-stop` — hard error on a theme spanning tw+us | read (split the theme per market) |
+   | Action C per-book scoping (v1.20.0) | one book per report | `positions.mjs review/breach-check --market tw|us` + row `market` field | read (invoke once per book) |
    | 6c no-chase classification (spike vs base-breakout vs base-reversal) | — | model judgment | uses `screen.mjs`'s `chgPct`/`signals.dayGainGt3`/`volConfirmed` as inputs |
    | 6e-1 / 6e-3 theme/correlation grouping | which stocks share a theme | model judgment | supplies `positions.theme` / `heat`'s `legs.json` grouping |
-   | 6f market condition gate (TAIEX vs 50/200MA) | — | model judgment (pending a future network delta — explicitly out of scope for rule-math-mechanization) | applies the gate by hand from a fetched TAIEX quote/MA until mechanized |
+   | 6f market condition gate (TAIEX vs 50/200MA for tw; S&P 500 vs 50/200MA for us) | — | model judgment (pending a future network delta — explicitly out of scope for rule-math-mechanization) | applies the gate by hand from a fetched index quote/MA until mechanized; per-market index, never cross-applied |
    | 6g buy-zone anchor (which technical level) | — | model judgment | the chosen level becomes `rules.mjs band`'s `--anchor` |
    | 6h/6i event-date discovery (next 財報/除權息 date) | — | model judgment | the discovered date becomes `rules.mjs earnings`'s `--event` |
    | 6i ex-dividend adjustment (restore dividend before judging support) | — | model judgment (unmechanized this delta) | — |
@@ -994,14 +1061,48 @@ catches what no index committee picked).
     This is best-effort and silent; never block the analysis on it. If Node/DB is unavailable,
     skip and mention it.
 
+### Action A — 美股 variant (v1.20.0)
+
+Triggered by: "美股推薦", "should I buy NVDA", "從 QQQ 挑一檔", or any US-ticker
+recommendation request. Steps 5–10 run with EXACTLY the same mechanics (`screen.mjs
+<TICKER>` works unchanged — market is inferred from the ticker shape); only the pool,
+the gate index, and the report header differ. The output is a standalone **美股報告**
+(市場維度 §1) — never merged into a 台股 table.
+
+- **Step 1–2 replacement — the pool**: QQQ and S&P 500 **top ~30 holdings** via the
+  Slickcharts recipes in `references/data-sources.md` §美股 (server-rendered tables,
+  agent-browser), **plus any ticker the user names** (自選, flagged as such). No
+  membership-score tiers: presence in the QQQ/S&P top-30 IS the index-conviction flag
+  (single-source pool); a user-named ticker outside both carries 「自選標的，無指數把關」.
+- **Step 2b (market scan) is N/A for US** — `scan.mjs` stays TW-only; the ETF top-30
+  pool is the liquidity pre-filter (every constituent clears 6q's US$20M floor by
+  orders of magnitude).
+- **Step 3 gate**: S&P 500 (`^GSPC`) vs its 50/200MA (6f 美股 clause).
+- **Step 3.5 continuity**: watchlist entries for US tickers live in the same analysis
+  note under `### 觀察名單（美股）` — a separate section so each market's list
+  round-trips into its own report.
+- **Step 5 data**: history + quote via `fetch-history.mjs <TICKER> --months N` (Yahoo
+  v8, JSON channel — no browser needed for OHLC/quote); earnings dates via the
+  §美股 recipes; `rules.mjs earnings --market us` for the blackout count. First-time
+  setup: `fetch-history.mjs SPY --months 24` to seed the NYSE calendar (6h).
+- **Step 7 sizing**: `--equity` = the **USD book** (`stock_equity_usd`), verified via
+  `sizing.equityCurrency: "USD"` in the output. 6p sentence 5 states the worst case
+  in **USD**.
+- **Step 9 persist**: US watchlist entries under `### 觀察名單（美股）`; recommended
+  picks' mirror tests state prices in USD.
+
 ---
 
 ## Action B — Record a trade to the holdings ledger
 
-Triggered by: "我買了 <股號/股名> <股數> @<價>", "賣出 <股號> 一半 @<價>". The user is
-reporting an actual transaction.
+Triggered by: "我買了 <股號/股名> <股數> @<價>", "賣出 <股號> 一半 @<價>", "我買了 NVDA
+10 股 @160". The user is reporting an actual transaction.
 
 1. Parse: date (default today), action (買/賣), code, name, shares, fill price.
+   **Market routing (市場維度 §4)**: an alphabetic ticker (NVDA, BRK.B) routes every
+   ledger write in this Action to `us-stock-holdings.md` (prices are USD by
+   construction); a numeric code routes to `stock-holdings.md`. Same table format,
+   never mixed in one file.
 2. Pull 停損/停利 from the most recent analysis note for that stock if available;
    otherwise leave blank or ask. The 停損 in the analysis should already be
    calculated per Rule 6a (from buy zone, ATR-based). Carry it over as-is.
@@ -1043,18 +1144,22 @@ anything", or a direct move question about a held stock ("XX 為什麼跌/漲").
 action that closes the loop: read what the user owns, get fresh data, and produce a
 per-holding sell recommendation.
 
-1. **Read the ledger.** Get the `## 持有中` positions from the holdings ledger (read
-   is lightweight — `obsidian read path="Eliot/Notes/2026/stock-holdings.md"`, or ask
-   Eliot). For each position you need: code, name, shares, cost average, recorded 停損
-   and 停利 target.
+1. **Read BOTH ledgers.** Get the `## 持有中` positions from the TW holdings ledger
+   (`obsidian read path="Eliot/Notes/2026/stock-holdings.md"`) AND, when it exists, the
+   US ledger (`Eliot/Notes/2026/us-stock-holdings.md`). For each position you need:
+   code, name, shares, cost average, recorded 停損 and 停利 target. A missing US ledger
+   just means no US book yet — proceed TW-only. **Steps 2–7 run once per book**, and
+   step 7 renders two separate tables under 台股報告 / 美股報告 headers (市場維度 §1);
+   `positions.mjs review --market tw` and `--market us` are the two invocations.
 
 2. **Fetch fresh data per holding:**
-   - **Live quote** from Yahoo (price recipe in `references/data-sources.md`).
+   - **Live quote** from Yahoo (TW price recipe in `references/data-sources.md`;
+     US quotes come free with `fetch-history.mjs <TICKER> --months 1`, §美股).
      **Plausibility bound (Rule 3a) before it feeds the stop/TP comparison in
-     step 5**: if the live quote deviates > 10% from the last settled DB close,
-     treat it as a suspect fetch (wrong ticker/stale page/parse error) and
-     re-fetch rather than compare against 停損/停利 — a parse error must not fake
-     a stop breach.
+     step 5**: if the live quote deviates beyond the market's bound (10% tw / 20% us,
+     `deviate --market …`) from the last settled DB close, treat it as a suspect
+     fetch (wrong ticker/stale page/parse error) and re-fetch rather than compare
+     against 停損/停利 — a parse error must not fake a stop breach.
    - **Current ETF membership & weight**: re-fetch the relevant ETF holdings from the
      官網 and check whether the stock is still a constituent and at what weight.
    - **Technical indicators** from Histock (recipe in `references/data-sources.md`):
@@ -1078,10 +1183,11 @@ per-holding sell recommendation.
    1. **機械性 (除權息, Rule 6i).** If the move is wholly explained by 除息, stop
       here — do NOT issue a 情緒・雜訊 verdict (a mechanical gap is not sentiment).
       State "除息機械性缺口，非賣壓" and skip the remaining checks; no news search runs.
-   2. **大盤 (TAIEX 同日漲跌%).** If the whole market moved, produce ONE market-level
-      attribution and continue per-stock only for holdings whose move materially
-      exceeds the index (rough guide: beyond TAIEX% + 2pp). On a broad-market day this
-      keeps the output to one market read plus outliers, not N repeated stories.
+   2. **大盤 (同日漲跌% — TAIEX for 台股 holdings, S&P 500 for 美股 holdings).** If the
+      whole market moved, produce ONE market-level attribution per book and continue
+      per-stock only for holdings whose move materially exceeds their own index (rough
+      guide: beyond index% + 2pp). On a broad-market day this keeps the output to one
+      market read plus outliers, not N repeated stories.
    3. **同主題 (same supply-chain peers, per 6e-1).** If peers moved together, it's
       theme-wide, not stock-specific — say so, and narrow to what's different about
       this name if anything is.
@@ -1143,11 +1249,12 @@ per-holding sell recommendation.
    | 權重明顯下降 | ETF weight well below the level recorded at buy | **留意** — losing index conviction |
    | 報酬率檢視 | report unrealized P/L % from cost regardless | context for the above |
 
-   **Computed mechanically by `positions.mjs review [--price code=P ...]`** (Rule 8)
-   — read `invested`/`live`/`unrealized`/`unrealizedPct`/`stopHit`/`targetHit`/
-   `sessionsSinceBreach` per holding; never hand-compute cost × shares or hand-compare
-   live price to the recorded stop/target. `stopHit` folds in `breach-check` (Rule
-   6n) so a re-underwritten position never shows a false 停損觸價.
+   **Computed mechanically by `positions.mjs review [--price code=P ...] [--market
+   tw|us]`** (Rule 8) — read `invested`/`live`/`unrealized`/`unrealizedPct`/`stopHit`/
+   `targetHit`/`sessionsSinceBreach` per holding; never hand-compute cost × shares or
+   hand-compare live price to the recorded stop/target. `stopHit` folds in
+   `breach-check` (Rule 6n) so a re-underwritten position never shows a false 停損觸價.
+   Run once per book with `--market` so each report's numbers stay in one currency.
 
 6. **Thesis health re-score (Rule 6o).** For each holding, read its thesis note
    (`Eliot/Notes/<YYYY>/thesis/<code>-*.md`) and run the health re-score + drift
@@ -1163,13 +1270,15 @@ per-holding sell recommendation.
    context), and continue this review using the ledger's recorded 停損/停利 — do not
    block the review on the missing thesis.
 
-7. **Present a holdings review table**: code · name · cost · live price · 報酬率% ·
+7. **Present the review as TWO tables — 台股報告 then 美股報告** (市場維度 §1; one
+   table when only one book has positions): code · name · cost · live price · 報酬率% ·
    技術面摘要 · 每個訊號狀態 · **異動歸因** (verdict icon/short verdict for triggered
    holdings, "—" for untriggered) · **論點健康度** (score + mapped action, or "無 thesis
-   紀錄") · 建議 (續抱 / 分批停利 / 停損出場 / 留意減碼). Lead with anything actionable
-   (停損/停利 hits, or a triggered thesis red line) at the top. Include a per-holding
-   technical summary row (MA position, KD state, RSI level) so the user sees the
-   full picture.
+   紀錄") · 建議 (續抱 / 分批停利 / 停損出場 / 留意減碼). TW prices in NT$, US prices in
+   US$ — stated in each table's header, never converted. Lead each report with anything
+   actionable (停損/停利 hits, or a triggered thesis red line) at the top. Include a
+   per-holding technical summary row (MA position, KD state, RSI level) so the user
+   sees the full picture.
 
 8. **Offer to update the ledger via Eliot** if the user acts on a suggestion (record
    the sell, update 持有中). Don't write unprompted.
@@ -1181,8 +1290,12 @@ per-holding sell recommendation.
 ## Action D — Draw a K-line chart marking buy/sell/hold reasons
 
 Triggered by: "畫 K 線", "畫個 K 線圖", "把買賣點/進出場標在圖上", "show me the chart for
-2330", "candlestick", "K-line", "視覺化我的持股", "畫出奇鋐走勢". The user wants to *see* a
-stock's price action with the decisions (and their reasons) marked on it.
+2330", "show me the chart for NVDA", "candlestick", "K-line", "視覺化我的持股",
+"畫出奇鋐走勢". The user wants to *see* a stock's price action with the decisions (and
+their reasons) marked on it. US tickers work everywhere a code does — the chart
+auto-switches to **綠漲紅跌 (美股慣例)** with a Yahoo-Finance footer and share-count
+volume units; TW charts stay 紅漲綠跌. Stop/target line colors are semantic
+(danger red / goal green) and never flip.
 
 This action is **code-driven, not browser-driven**: it renders a self-contained Tokyo-Night
 candlestick HTML file from a local SQLite DB (OHLC history + decision markers). All scripts are
@@ -1195,7 +1308,8 @@ TWSE 民國-date gotcha, and the exact CLI for every step.
 
 2. **Ensure the DB exists and history is fresh.**
    - `scripts/db.mjs --init` is implicit (every script auto-creates the schema).
-   - `scripts/fetch-history.mjs <code> --months 4` (TWSE 上市; add `--market tpex` for 上櫃).
+   - `scripts/fetch-history.mjs <code> --months 4` (TWSE 上市; add `--market tpex` for 上櫃;
+     an alphabetic ticker auto-routes to Yahoo v8 — `fetch-history.mjs NVDA --months 4`).
      Only missing months are fetched, and the current month always tops up — cheap to re-run.
 
 3. **Make sure the buy/sell/hold "why" markers exist.** The chart is only as good as its markers.
@@ -1253,4 +1367,10 @@ TWSE 民國-date gotcha, and the exact CLI for every step.
   `review`) are the rule-math-mechanization engines (Rule 8) — see the 規則計算歸屬表
   for which rule each verb owns. Read only, never hand-compute; CLI + JSON glossary in
   `references/charting.md` §11–12. `rules.mjs earnings --sync-holidays` is the ONLY
-  network call in this delta (opt-in, refreshes the built-in Taiwan holiday table).
+  network call in this delta (opt-in, refreshes the built-in Taiwan holiday table —
+  tw only; for us it hard-errors, seed the NYSE calendar with
+  `fetch-history.mjs SPY --months 24` instead).
+- **美股 quick map (市場維度)**: OHLC+quote = `fetch-history.mjs <TICKER>` (Yahoo v8
+  JSON, no browser; `--source stooq` as the explicit fallback); pool = Slickcharts
+  recipes (`references/data-sources.md` §美股); calendar = SPY-derived; ledger =
+  `us-stock-holdings.md`; equity = `stock_equity_usd`. Reports always separate.

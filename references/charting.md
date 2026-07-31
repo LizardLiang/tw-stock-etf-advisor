@@ -80,6 +80,9 @@ node --experimental-sqlite scripts/db.mjs --init        # create file + schema
 node --experimental-sqlite scripts/fetch-history.mjs <code> --months 4            # TWSE (上市)
 node --experimental-sqlite scripts/fetch-history.mjs <code> --months 3 --market tpex   # 上櫃
 node --experimental-sqlite scripts/fetch-history.mjs <code> --months 6 --force    # ignore cache
+node --experimental-sqlite scripts/fetch-history.mjs NVDA --months 6              # 美股 (Yahoo v8, auto-routed)
+node --experimental-sqlite scripts/fetch-history.mjs SPY --months 24              # seeds the NYSE calendar (6h)
+node --experimental-sqlite scripts/fetch-history.mjs AAPL --source stooq          # explicit US fallback
 ```
 - Source: TWSE `rwd/zh/afterTrading/STOCK_DAY?response=json&date=YYYYMMDD&stockNo=CODE` (one call
   per month). OTC → TPEx `www/zh-tw/afterTrading/tradingStock?code=CODE&date=YYYY/MM/01&id=&response=json`.
@@ -100,6 +103,14 @@ node --experimental-sqlite scripts/fetch-history.mjs <code> --months 6 --force  
   fetchers now assert a JSON content-type via `readJson()` and fail by name; `parseTpexMonth`
   throws on a missing `tables[]` rather than returning an empty array. If you add a third source,
   keep that contract. Symptom to watch for: `upserted 0 rows` with no visible error.
+- **美股 (v1.20.0)**: an alphabetic ticker auto-routes to the Yahoo v8 chart API — one ranged
+  call, no per-month loop, no browser. The parser keeps the same fail-loud contract
+  (`chart.error`/schema drift/non-JSON all throw by name), converts dates in the exchange's own
+  timezone (never UTC slicing), and uses the split-adjusted raw `quote` arrays — refetch the full
+  range after a split. `--source stooq` is the explicit, never-automatic fallback (header-asserted
+  CSV; Stooq may serve a JS challenge to plain fetch — the named error is correct behavior). A
+  successful US fetch re-derives the US-scoped trading calendar (`holidays_us`), which is how
+  Rule 6h's NYSE counter stays honest — SPY's span is the authoritative calendar.
 - **Caching**: months already in `ohlc` are skipped (the newest month is always re-fetched to top up
   the latest sessions). The script throttles 1.2 s between month-calls and sends a `User-Agent` —
   TWSE rate-limits aggressive callers.
@@ -135,11 +146,14 @@ node --experimental-sqlite scripts/add-marker.mjs <code> <date> <action> [price]
 
 ```
 node --experimental-sqlite scripts/seed-from-obsidian.mjs
-node --experimental-sqlite scripts/seed-from-obsidian.mjs --vault "<path>" --ledger "<path>" --note "<path>"
+node --experimental-sqlite scripts/seed-from-obsidian.mjs --vault "<path>" --ledger "<path>" --note "<path>" --us-ledger "<path>"
 ```
 Parses the holdings ledger `## 交易明細` table → buy/sell markers (+ stop/target from the 停損 /
 停利目標 columns on buy rows; 備註 → reason) and the newest analysis note's `### 觀察名單` lines
 (`- <code> <name>：<trigger>`) → watch markers dated at the note's `created:` date. Idempotent.
+**市場維度 (v1.20.0)**: the US ledger (`us-stock-holdings.md`, default beside the TW one) seeds
+in its own pass; positions reconciliation is **market-scoped** — seeding the TW ledger can never
+delete a US position and vice versa. A missing US ledger is normal (skipped), not a failure.
 
 ## 6. Rendering the chart
 
@@ -153,9 +167,11 @@ node --experimental-sqlite scripts/render-chart.mjs <code> --days 60 [-o out.htm
   regenerable artifacts — the DB is the thing worth syncing, not the HTML.
 - Open it in the browser to show the user (`start <path>` on Windows, or `agent-browser open file:///<path>`
   + screenshot if you want to verify headless).
-- The chart renders candles (紅漲綠跌), MA5/10/20, volume, dashed 停損/停利 lines, and pin markers
-  whose hover tooltip shows the recorded reason + note link. MAs are computed in JS from closes — no
-  need to populate `indicators` first.
+- The chart renders candles (**market-aware**: TW 紅漲綠跌; US tickers 綠漲紅跌 with a
+  Yahoo-Finance footer and M/K 股 volume units — the template reads `DATA.market`), MA5/10/20,
+  volume, dashed 停損/停利 lines (semantic red/green, never flipped), and pin markers whose hover
+  tooltip shows the recorded reason + note link. MAs are computed in JS from closes — no need to
+  populate `indicators` first. US tickers are accepted anywhere a code is (`render-chart.mjs NVDA`).
 
 ## 7. Tokyo Night palette + marker map (enkia/tokyo-night-vscode-theme)
 
@@ -204,7 +220,9 @@ these numbers caused both 2026-07 paralysis bugs; don't.
 node --experimental-sqlite scripts/screen.mjs <code> [<code>...] [--date YYYY-MM-DD]
 ```
 One JSON line per code, computed from the local `ohlc` table (top up with
-`fetch-history.mjs <code> --months 1` first). Fields:
+`fetch-history.mjs <code> --months 1` first). US tickers work identically
+(`screen.mjs NVDA`) — every output object carries `market: 'tw'|'us'` (derived from the
+code shape; the 6q liquidity floor and 6l-1 tick switch on it automatically). Fields:
 
 - price/volume: `date open high low close chgPct volume vol5avg volRatio`
   (`vol5avg` = mean of the **prior** 5 sessions; `volRatio > 1` = Rule 6j confirmed, `≥ 1.5` strong)
@@ -268,6 +286,8 @@ node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3 --zone LO-HI 
   2% per-theme heat cap manually across correlated picks, Rule 6e-3). Also returns
   `sizing.pilotShares = floor(shares × pilotPct/100)` — the Rule 6e-5 first entry (50%, or 25%
   on the 6j-A2 trial path). **Never hand-halve a position — read `pilotShares`.**
+  **Separate books (市場維度)**: pass the equity of the stock's OWN market — TWD for numeric
+  codes, USD for US tickers; `sizing.equityCurrency` stamps which book was used, never FX.
 
 - `entryAuthorised` — **the Rule 6l-1 authorised entry set** (added v1.15.0): the 6l band
   INTERSECT the prices where R:R >= 1.5, aligned to the exchange tick. Fields:
@@ -280,7 +300,8 @@ node --experimental-sqlite scripts/screen.mjs <code> --style 1|2|3 --zone LO-HI 
   that is a complete answer, not a failure to compute. Two details the script owns: the
   ceiling is FLOORED to the tick (rounding up yields a price failing its own test —
   68.6666 -> 68.67 -> R:R 1.4993), and it uses the REPORTED (rounded) stop so a reader can
-  reproduce it from the same object. `tickSize()` is exported for reuse.
+  reproduce it from the same object. `tickSize(price, market)` is exported for reuse —
+  the TWSE/TPEx ladder for tw, a flat $0.01 for us (v1.20.0).
 
 Output JSON: `style variant volTrial pilotPct volRatio zone pivot revlow confirmLow reversalDate
 atr14 atrHot stop stopPctBelowBottom tp1 tp2
@@ -340,11 +361,11 @@ verdict-out subcommands, no portfolio state. `earnings` is the only verb that op
 (for the `holidays` table); `band`/`heat`/`thesis`/`deviate` are pure functions.
 
 ```
-node --experimental-sqlite scripts/rules.mjs earnings --event YYYY-MM-DD [--from YYYY-MM-DD] [--sync-holidays]
+node --experimental-sqlite scripts/rules.mjs earnings --event YYYY-MM-DD [--from YYYY-MM-DD] [--market tw|us] [--sync-holidays]
 node --experimental-sqlite scripts/rules.mjs band --style 1|2|3 --anchor A [--price P] [--breakout-pct N]
 node --experimental-sqlite scripts/rules.mjs heat --json legs.json --equity E [--cap 2]
 node --experimental-sqlite scripts/rules.mjs thesis --json thesis.json
-node --experimental-sqlite scripts/rules.mjs deviate --a V1 --b V2 --kind price|weight|indicator|quote-vs-close
+node --experimental-sqlite scripts/rules.mjs deviate --a V1 --b V2 --kind price|weight|indicator|quote-vs-close [--market tw|us]
 ```
 
 - **`earnings`** (Rule 6h) — `--event`/`--from` are ISO dates (`--from` defaults to today).
@@ -362,6 +383,10 @@ node --experimental-sqlite scripts/rules.mjs deviate --a V1 --b V2 --kind price|
   false` together with `tradingDaysAway <= 7` must be treated as a blackout unless a sync
   verifies the range. A warning nobody is instructed to act on is decoration, which is the
   exact defect class this feature exists to remove.
+  **`--market us` (v1.20.0)**: counts against the NYSE calendar (`holidays_us` + the
+  US-scoped ohlc span). The two calendars never mix — 春節 is a normal NYSE week. There is
+  no US sync source: `--sync-holidays --market us` hard-errors, and the remedy is
+  `fetch-history.mjs SPY --months 24` (SPY-derived span = the verified US calendar).
 - **`band`** (Rule 6l) — `--anchor` is the trigger level; band width by style: Style-1 generic
   +2%, Style-2 breakout pivot `--breakout-pct` (default 3, i.e. +2~3%), Style-3 reversal close
   +1%. With `--price`: `fired` (price ≥ anchor), `lateFire` (price > `bandHi`), `excessPct`
@@ -378,7 +403,8 @@ node --experimental-sqlite scripts/rules.mjs deviate --a V1 --b V2 --kind price|
   `封鎖`, `>=1%` → `標註` (compared on the 1-decimal display value, so a reading that rounds
   to exactly "1.0%" still flags). `--kind indicator`: absolute `deltaAbs > 3` → `標註` (0–100
   scale). `--kind quote-vs-close`: `deltaPct > 10%` → `refetch` (the timing exemption — never
-  `封鎖`, a live-vs-T-1-close gap beyond 漲跌停 is a suspect fetch, not a conflict).
+  `封鎖`, a live-vs-T-1-close gap beyond 漲跌停 is a suspect fetch, not a conflict). With
+  `--market us` the bound is **20%** (no 漲跌停; real 10–18% earnings gaps exist — v1.20.0).
 
 Exit codes: bad/missing flags, unparseable `--json`, or `--event` before `--from` → exit 1
 with a message.
@@ -392,9 +418,14 @@ re-underwritten (or `void`) position never reports a breach, only P&L.
 
 ```
 node --experimental-sqlite scripts/positions.mjs theme-stop --theme "AI鏈" --price 3017=2135 [--price code=P ...]
-node --experimental-sqlite scripts/positions.mjs breach-check [--price code=P ...]
-node --experimental-sqlite scripts/positions.mjs review [--price code=P ...]
+node --experimental-sqlite scripts/positions.mjs breach-check [--price code=P ...] [--market tw|us]
+node --experimental-sqlite scripts/positions.mjs review [--price code=P ...] [--market tw|us]
 ```
+
+**市場維度 (v1.20.0)**: every `review` row carries `market` (derived from code shape);
+`--market tw|us` scopes `review`/`breach-check` to one book — Action C invokes once per book
+so each report stays in one currency. `theme-stop` **hard-errors on a theme that spans both
+markets** (TWD+USD must never be summed; split the theme per market).
 
 - **`theme-stop`** (Rule 6e-4) — all legs of `--theme` need a `--price`; the command errors
   (naming the missing codes) rather than silently partial-computing the combined %. `tier` ∈

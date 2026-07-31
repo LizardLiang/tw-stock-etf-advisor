@@ -29,7 +29,8 @@ EVALEOF
    Fubon is ASP.NET postback — both return a 200 shell with no holdings, which is easy to
    mistake for "the endpoint is down". Rule 1 says agent-browser; that is not a stylistic
    preference, it is the difference between real data and a false negative. (Plain-JSON official
-   endpoints — the `scan.mjs` and `fetch-history.mjs` sources — are the documented exception.)
+   endpoints — the `scan.mjs` and `fetch-history.mjs` sources, **including the Yahoo v8 chart
+   API for US OHLC/quotes** — are the documented exception.)
 
 ---
 
@@ -482,3 +483,69 @@ Not yet a mandatory gate, but high-signal for Taiwan. 外資/投信/自營 net b
 - A stock you want to buy while **外資 connectively 賣超** is a red flag; **投信 連買**
   (fund window-dressing, esp. quarter-end) is a tailwind. Use as context, not a
   hard gate, until promoted to a numbered rule.
+
+---
+
+## 美股 — US data sources (市場維度, v1.20.0)
+
+### OHLC history + live quote — `fetch-history.mjs` (Yahoo v8 chart API, plain JSON)
+
+**No browser needed.** `node --experimental-sqlite scripts/fetch-history.mjs NVDA --months 6`
+hits `https://query1.finance.yahoo.com/v8/finance/chart/<TICKER>?period1=…&period2=…&interval=1d`
+— keyless JSON (the crumb requirement is v10/quoteSummary only; the script's UA header
+suffices). One ranged call, not per-month. The parser (`parseYahooChart`, golden-tested):
+
+- Converts epoch timestamps in the **exchange's own timezone** (`America/New_York`) —
+  never UTC slicing (an evening-ET timestamp lands on the wrong UTC day).
+- Uses the raw `quote` arrays, NOT `adjclose` — matches the TW convention (settled
+  closes; dividends via 6i judgment). **Yahoo's arrays are split-adjusted**: after a
+  split, refetch the full range so old rows restate (`upsertOhlc` overwrites).
+- **Fails loudly by name** on `chart.error` (Yahoo answers 200 + an error body for bad
+  tickers), missing `result[0]`, schema drift, or a non-JSON response — the same
+  endpoint-rot contract as the TWSE/TPEx fetchers. `upserted 0 rows` without an error
+  is the symptom that must never happen.
+- The **live/delayed quote comes free**: `meta.regularMarketPrice`/`regularMarketTime`
+  in the same payload — a `--months 1` top-up is also the Action C quote fetch.
+  Fallback quote channel: agent-browser on `https://finance.yahoo.com/quote/<TICKER>`
+  (SPA — browser channel, standard recipe).
+
+**Fallback — Stooq CSV, explicit only**: `--source stooq` reads
+`https://stooq.com/q/d/l/?s=<ticker>.us&i=d`. Never auto-fallback (silent source
+switching is the endpoint-rot bug class). Header-asserted; observed live 2026-07-31:
+Stooq can serve a JS browser-challenge page to plain fetch — the named error is the
+correct outcome, and the practical fallback is then the Yahoo SPA via agent-browser.
+
+**NYSE calendar seeding (Rule 6h)**: `--sync-holidays` has NO US source (Nager.Date is
+federal holidays — wrong for markets). Verified US coverage = the US-scoped ohlc span:
+`fetch-history.mjs SPY --months 24` once, then top up periodically. SPY trades every
+NYSE session, so its history IS the calendar.
+
+### ETF top holdings — Slickcharts (agent-browser; the US Action-A pool)
+
+Server-rendered tables (rank · company · ticker · weight) — standard recipe, no SPA tricks:
+
+```
+agent-browser open "https://www.slickcharts.com/nasdaq100" && agent-browser wait 3500 && agent-browser eval --stdin <<'EVALEOF'
+(() => {
+  const rows = [...document.querySelectorAll('table tbody tr')].slice(0, 30);
+  return rows.map(tr => [...tr.querySelectorAll('td')].map(td => td.innerText.trim()).join(' | ')).join('\n');
+})()
+EVALEOF
+```
+
+- **QQQ pool**: `https://www.slickcharts.com/nasdaq100` (Nasdaq-100 = QQQ's index).
+- **SPY pool**: `https://www.slickcharts.com/sp500` (top 30 by weight).
+- Zero parsed rows = source failed — **say so and analyze with user-named tickers
+  only**; never pad (6q no-padding discipline).
+- Fallback for QQQ: Invesco's daily holdings CSV (plain fetch,
+  `https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0?audienceType=Investor&action=download&ticker=QQQ`).
+  SSGA's SPY file is XLSX (a zip) — not parseable zero-dependency; don't use it.
+
+### US earnings dates (Rule 6h)
+
+- **Yahoo quote page**: `https://finance.yahoo.com/quote/<TICKER>` shows "Earnings Date"
+  in the summary table (agent-browser, read `innerText` around "Earnings Date").
+- **Fallback — WebSearch**: "`<TICKER>` next earnings date" — earnings dates are widely
+  syndicated; cite the date + source. Then `rules.mjs earnings --event <date> --market us`.
+- US 除權息: quarterly cash dividends, usually immaterial (SKILL.md 6i 美股條款); the
+  ex-date shows on the same Yahoo summary table when needed.

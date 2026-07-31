@@ -10,7 +10,8 @@ Reads are lightweight and safe to do directly: `obsidian read path="<file>"`.
 Default vault paths (confirm against `Eliot/Profile.md > ## Vault Layout`):
 - Notes: `Eliot/Notes/<YYYY>/`
 - Project: `Eliot/Projects/stock.md`
-- Holdings ledger: `Eliot/Notes/<YYYY>/stock-holdings.md`
+- Holdings ledger (台股): `Eliot/Notes/<YYYY>/stock-holdings.md`
+- Holdings ledger (美股): `Eliot/Notes/<YYYY>/us-stock-holdings.md`
 
 ---
 
@@ -93,6 +94,15 @@ up: ["[[stock]]"]
 Read `## 持有中` to get each position's code, name, shares, cost average, 停損, and
 停利目標 — those are the thresholds the sell-signal evaluation compares the live quote
 and current ETF weight against (see SKILL.md Action C).
+
+### 美股 ledger (`us-stock-holdings.md`, 市場維度 v1.20.0)
+The US book is a **separate file** beside the TW one — SAME two-table format, same
+frontmatter shape (`tags: [stock, holdings, ledger, us]`), with 股號 holding the
+alphabetic ticker (NVDA, BRK.B) and every price/amount in **USD** (no currency column
+needed — the file IS the currency boundary). Action B routes by ticker shape: alphabetic
+→ this file, numeric → `stock-holdings.md`; never mix markets in one file (a wrong-market
+row is skipped by `seed-from-obsidian.mjs` with a warning). Action C reads both files and
+reports them as two separate tables. First US trade creates the file.
 
 ---
 

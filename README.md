@@ -1,13 +1,16 @@
 # Taiwan Stock & ETF Advisor
 
 A Claude [skill](https://code.claude.com/docs/en/skills) / [plugin](https://code.claude.com/docs/en/plugins)
-for **Taiwan ETF / stock research, buy-sell decisions, and personal holdings tracking** —
+for **Taiwan AND US stock/ETF research, buy-sell decisions, and personal holdings tracking** —
 with a hard rule it never breaks: **always fetch live data, never guess or derive a price.**
 
 It reproduces an end-to-end workflow: find the common holdings between two ETFs
 (e.g. `0050` 元大台灣50 and `0052` 富邦科技), recommend what to buy and why, attach an
 entry/exit plan from a live quote, record the trades you actually make, and later review
-your holdings to tell you what to consider selling.
+your holdings to tell you what to consider selling. US stocks (美股) run the same rules
+as a **separate book** — QQQ / S&P 500 top-holdings pool or any ticker you name, USD
+sizing with no FX mixing, NYSE-calendar earnings blackouts, and always a separate
+美股報告 next to the 台股報告 (never one merged table).
 
 ## Install
 
