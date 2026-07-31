@@ -3,10 +3,16 @@
 All fetching uses the `agent-browser` skill/CLI. General pattern:
 
 ```
-agent-browser open "<url>" && agent-browser wait 3500 && agent-browser eval --stdin <<'EVALEOF'
+agent-browser --session tw-stock open "<url>" && agent-browser --session tw-stock wait 3500 && agent-browser --session tw-stock eval --stdin <<'EVALEOF'
 <javascript>
 EVALEOF
 ```
+
+- **ALWAYS pass `--session tw-stock` on EVERY call — never use the default session.**
+  The default session is the user's own interactive browser; an unnamed `open`
+  navigates THEIR page away (real incident 2026-07-31 — the user's page was hijacked
+  mid-use). Every agent-browser command in this skill runs in the dedicated
+  `tw-stock` isolated session, including `close`.
 
 - Use a **fixed `wait 3500`**, NOT `wait --load networkidle`. Yahoo and the 投信 sites
   keep firing ad/analytics requests, so `networkidle` frequently hangs to timeout.
@@ -525,13 +531,16 @@ NYSE session, so its history IS the calendar.
 Server-rendered tables (rank · company · ticker · weight) — standard recipe, no SPA tricks:
 
 ```
-agent-browser open "https://www.slickcharts.com/nasdaq100" && agent-browser wait 3500 && agent-browser eval --stdin <<'EVALEOF'
+agent-browser --session tw-stock open "https://www.slickcharts.com/nasdaq100" && agent-browser --session tw-stock wait 3500 && agent-browser --session tw-stock eval --stdin <<'EVALEOF'
 (() => {
   const rows = [...document.querySelectorAll('table tbody tr')].slice(0, 30);
   return rows.map(tr => [...tr.querySelectorAll('td')].map(td => td.innerText.trim()).join(' | ')).join('\n');
 })()
 EVALEOF
 ```
+
+- Slickcharts sits behind Cloudflare — a first load can show a 請稍候/checking page and
+  `eval` returns `""`. Wait ~8–10 s more and re-eval before declaring the source down.
 
 - **QQQ pool**: `https://www.slickcharts.com/nasdaq100` (Nasdaq-100 = QQQ's index).
 - **SPY pool**: `https://www.slickcharts.com/sp500` (top 30 by weight).

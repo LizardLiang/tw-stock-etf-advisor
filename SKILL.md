@@ -1340,10 +1340,12 @@ TWSE 民國-date gotcha, and the exact CLI for every step.
 
 ## Mechanics & gotchas
 
-- `agent-browser`: `open` → `wait 3500` (a fixed wait — Yahoo's `--load networkidle`
-  often hangs on ad/JS activity) → extract via `eval --stdin` heredoc → `close` when
-  done. Full recipes and the exact selectors/text-anchors are in
-  `references/data-sources.md`.
+- `agent-browser`: **always `--session tw-stock` on every command** (the default
+  session is the user's own interactive browser — an unnamed `open` hijacks their
+  page; 2026-07-31 incident). Then `open` → `wait 3500` (a fixed wait — Yahoo's
+  `--load networkidle` often hangs on ad/JS activity) → extract via `eval --stdin`
+  heredoc → `close` when done. Full recipes and the exact selectors/text-anchors are
+  in `references/data-sources.md`.
 - Read that reference file at the start of Actions A and C — it has the per-site
   extraction code that is easy to get wrong (div-based tables, stale-data traps).
 - Read `references/obsidian-tracking.md` before any persist step so the note and

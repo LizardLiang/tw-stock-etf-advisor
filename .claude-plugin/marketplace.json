@@ -9,7 +9,7 @@
       "name": "tw-stock-etf-advisor",
       "source": "./",
       "description": "Taiwan AND US stock/ETF research, buy-sell decisions, holdings tracking, and Tokyo-Night K-line charting — two separate books (TWD/USD, no FX), two separate reports (0050 / 0052 common holdings + QQQ / S&P 500 pools, live-quote entry/exit plans, per-market trade ledgers, sell-signal review, market-aware candlestick charts with forward signals + post-mortem review panel, SQLite persistence with per-market trading calendars) — plus built-in trade discipline: thesis tracking with health scores, a mirror-test entry gate, move attribution, data-richness rating, and cross-source validation.",
-      "version": "1.20.0"
+      "version": "1.20.1"
     }
   ]
 }
