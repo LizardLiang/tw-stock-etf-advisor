@@ -25,6 +25,14 @@
       "expected_output": "Reads the 持有中 ledger (3017 奇鋐), renders its candlestick chart with buy/stop/target markers and reasons. Standalone HTML, Tokyo Night.",
       "files": [],
       "assertions": []
+    },
+    {
+      "id": 3,
+      "name": "chart-us-stock",
+      "prompt": "show me a candlestick chart for NVDA and mark why I bought it",
+      "expected_output": "Fetches NVDA history via fetch-history.mjs (Yahoo v8, --market us inferred from the alphabetic ticker), renders a standalone candlestick HTML with GREEN up / RED down candles (綠漲紅跌), footer reading 資料來源 Yahoo Finance · … · 綠漲紅跌(美股慣例), volume in M/K 股 not 張, and the buy marker with its reason. Never mixes into a TW chart or TW color convention.",
+      "files": [],
+      "assertions": []
     }
   ]
 }

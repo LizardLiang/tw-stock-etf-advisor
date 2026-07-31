@@ -5,7 +5,9 @@
   render-chart.mjs replaces the __CHART_DATA__ token below with a JSON literal and writes the file.
   Open it in any browser; everything (data + engine) is inline.
 
-  Taiwan convention: 紅漲綠跌 — red candle = up (close ≥ open), green = down. (Inverted vs Western.)
+  Color convention is MARKET-AWARE (DATA.market): TW 紅漲綠跌 — red = up, green = down
+  (inverted vs Western); US ('us') flips to 綠漲紅跌 so each chart reads natively for its
+  market. The stop/target line colors are semantic (danger red / goal green) and never flip.
 -->
 <html lang="zh-Hant">
 <head>
@@ -93,10 +95,22 @@
 <script>
 const DATA = __CHART_DATA__;
 
+// ---- market convention (US delta) ------------------------------------------------------
+// TW: 紅漲綠跌. US: 綠漲紅跌. UP/DOWN drive candles, volume bars, hover AND the CSS vars
+// (legend + review-table 距現價) — the four former hardcoded '#f7768e':'#9ece6a' sites all
+// read these. Flipping :root alone was NOT enough (drawing code had its own literals).
+const IS_US = DATA.market === 'us';
+const UP = IS_US ? '#9ece6a' : '#f7768e', DOWN = IS_US ? '#f7768e' : '#9ece6a';
+document.documentElement.style.setProperty('--up', UP);
+document.documentElement.style.setProperty('--down', DOWN);
+
 // ---- helpers ---------------------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
 const fmt = (n, d=2) => (n==null || isNaN(n)) ? '–' : Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
-const fmtVol = (v) => v==null ? '–' : (v>=1e8 ? (v/1e8).toFixed(1)+'億股' : Math.round(v/1000).toLocaleString()+'張');
+// Volume unit per market: TW thinks in 張/億股; US in plain shares (M/K).
+const fmtVol = (v) => v==null ? '–'
+  : IS_US ? (v>=1e6 ? (v/1e6).toFixed(1)+'M股' : Math.round(v/1e3).toLocaleString()+'K股')
+  : (v>=1e8 ? (v/1e8).toFixed(1)+'億股' : Math.round(v/1000).toLocaleString()+'張');
 
 function sma(vals, n){
   const out = Array(vals.length).fill(null);
@@ -111,6 +125,7 @@ function sma(vals, n){
 
 // ---- marker styling --------------------------------------------------------------------
 // Distinct glyphs/colors so markers never read as candle colors. stop/target are price lines.
+// stop(red)/target(green) are SEMANTIC danger/goal colors — deliberately NOT flipped for US.
 const MK = {
   buy:    {glyph:'▲', color:'#7aa2f7', label:'買進', line:false, place:'below'},
   sell:   {glyph:'▼', color:'#bb9af7', label:'賣出', line:false, place:'above'},
@@ -143,7 +158,9 @@ let geom = null;                          // computed in draw(); used by hover h
 $('t-code').textContent = DATA.code;
 $('t-name').textContent = DATA.name || '';
 $('t-range').textContent = rows.length ? `${rows[0].date} → ${rows[rows.length-1].date}　(${rows.length} 交易日)` : '無資料';
-$('t-foot').textContent = `資料來源 TWSE/TPEx · DB 持久化 · 產生於 ${DATA.generated} · 紅漲綠跌(台股慣例)`;
+$('t-foot').textContent = IS_US
+  ? `資料來源 Yahoo Finance · DB 持久化 · 產生於 ${DATA.generated} · 綠漲紅跌(美股慣例)`
+  : `資料來源 TWSE/TPEx · DB 持久化 · 產生於 ${DATA.generated} · 紅漲綠跌(台股慣例)`;
 // chips = the forward-looking things to CHECK (pending signals / open-position stops & targets)
 const pending = DATA.markers.filter(m => m.status === 'pending' || m.action === 'signal');
 $('t-chips').innerHTML = (pending.length
@@ -201,7 +218,7 @@ function draw(){
   // volume bars
   for (let i=0;i<n;i++){
     const r=rows[i], up=r.close>=r.open;
-    ctx.fillStyle = (up?'#f7768e':'#9ece6a')+'66';
+    ctx.fillStyle = (up?UP:DOWN)+'66';
     const x=xAt(i)-cw/2, y=yVol(r.volume||0);
     ctx.fillRect(x,y,cw,volBot-y);
   }
@@ -209,7 +226,7 @@ function draw(){
   // candles
   for (let i=0;i<n;i++){
     const r=rows[i], up=r.close>=r.open;
-    const col = up?'#f7768e':'#9ece6a';
+    const col = up?UP:DOWN;
     const x=xAt(i);
     ctx.strokeStyle=col; ctx.fillStyle=col; ctx.lineWidth=1;
     ctx.beginPath(); ctx.moveTo(x,yAt(r.high)); ctx.lineTo(x,yAt(r.low)); ctx.stroke();
@@ -295,7 +312,7 @@ function onMove(ev){
   const x=geom.xAt(i);
   ctx.strokeStyle='#7aa2f733'; ctx.setLineDash([3,3]); ctx.beginPath();
   ctx.moveTo(x,geom.priceTop); ctx.lineTo(x,geom.volBot); ctx.stroke(); ctx.setLineDash([]);
-  const r=rows[i], up=r.close>=r.open, col=up?'#f7768e':'#9ece6a';
+  const r=rows[i], up=r.close>=r.open, col=up?UP:DOWN;
   const chg=i>0?((r.close-rows[i-1].close)/rows[i-1].close*100):0;
   showTip(ev, `<b>${r.date}</b><br>`
     +`開 ${fmt(r.open)}　高 ${fmt(r.high)}<br>低 ${fmt(r.low)}　收 <span style="color:${col}">${fmt(r.close)}</span><br>`

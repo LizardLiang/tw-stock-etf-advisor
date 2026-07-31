@@ -26,9 +26,23 @@ function sinceDate(days) {
   return d.toISOString().slice(0, 10);
 }
 
+/** First positional token, skipping flags AND their values — a naive "first alphabetic token"
+ * would swallow `-o out.html`'s value as a US ticker. */
+function positionalCode(argv) {
+  const FLAGS_WITH_VALUE = new Set(['--days', '-o', '--out']);
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i].startsWith('-')) { if (FLAGS_WITH_VALUE.has(argv[i])) i++; continue; }
+    return argv[i];
+  }
+  return null;
+}
+
 function main() {
-  const code = process.argv.slice(2).find(a => /^\d{4,6}$/.test(a));
-  if (!code) { console.error('Usage: render-chart.mjs <code> [--days N] [-o out.html]'); process.exit(1); }
+  const raw = positionalCode(process.argv.slice(2));
+  const isTw = raw != null && /^\d{4,6}$/.test(raw);
+  const isUs = raw != null && /^[A-Za-z][A-Za-z.\-]{0,9}$/.test(raw);
+  if (!isTw && !isUs) { console.error('Usage: render-chart.mjs <code|TICKER> [--days N] [-o out.html]'); process.exit(1); }
+  const code = isTw ? raw : raw.toUpperCase();
   const days = Number(arg('--days')) || 60;
   const from = sinceDate(days);
 
